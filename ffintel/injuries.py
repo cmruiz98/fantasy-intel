@@ -31,6 +31,34 @@ from . import sources
 ESPN_INJURIES = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
 ESPN_NEWS = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news?limit=150"
 SLEEPER_PLAYERS = "https://api.sleeper.app/v1/players/nfl"
+# ESPN's CDN rejects plain script requests from cloud servers, so ask like a browser
+# and fall back to the mirror host if the first one refuses.
+ESPN_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/128.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.espn.com/nfl/injuries",
+    "Origin": "https://www.espn.com",
+}
+ESPN_MIRROR = {"site.api.espn.com": "site.web.api.espn.com"}
+RSS_FEEDS = [("CBS Sports", "https://www.cbssports.com/rss/headlines/nfl/"),
+             ("ESPN", "https://www.espn.com/espn/rss/nfl/news")]
+
+
+def espn_json(url: str):
+    """GET an ESPN endpoint, retrying on the mirror host; errors name the status code."""
+    last = None
+    urls = [url] + [url.replace(h, m) for h, m in ESPN_MIRROR.items() if h in url]
+    for u in urls:
+        try:
+            r = sources.SESSION.get(u, headers=ESPN_HEADERS, timeout=30)
+            if r.status_code == 200:
+                return r.json()
+            last = f"HTTP {r.status_code} from {u.split('/')[2]}"
+        except Exception as e:
+            last = f"{type(e).__name__} from {u.split('/')[2]}"
+    raise RuntimeError(last or "no response")
 
 # Expected games missed per status when nothing more specific is known
 BASE_GAMES = {"SEASON": 99.0, "IR": 4.0, "PUP": 4.0, "NFI": 4.0, "SUSPENSION": 2.0, "UNAVAILABLE": 2.0,
@@ -310,10 +338,9 @@ def _games_from_return(return_date: str, team: str, game_dates: dict) -> float |
 
 
 def espn_feed(espn_idmap: dict, nidx: dict, game_dates: dict) -> list[Signal]:
-    r = sources.SESSION.get(ESPN_INJURIES, timeout=30)
-    r.raise_for_status()
+    data = espn_json(ESPN_INJURIES)
     out = []
-    for team in r.json().get("injuries", []):
+    for team in data.get("injuries", []):
         for it in team.get("injuries", []):
             ath = it.get("athlete", {}) or {}
             eid = ath.get("id")
@@ -383,11 +410,10 @@ def sleeper_feed(ids: pd.DataFrame, nidx: dict) -> list[Signal]:
 
 
 def news_feed(espn_idmap: dict, nidx: dict) -> list[Signal]:
-    r = sources.SESSION.get(ESPN_NEWS, timeout=30)
-    r.raise_for_status()
+    data = espn_json(ESPN_NEWS)
     out = []
     cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
-    for a in r.json().get("articles", []):
+    for a in data.get("articles", []):
         text = f"{a.get('headline', '')}. {a.get('description', '')}"
         if not re.search(r"injur|hurt|ankle|knee|hamstring|concussion|mri|surgery|out for|ruled out|week-to-week|"
                          r"\bir\b|torn|sprain|strain|fracture|questionable|doubtful|cleared|return", text, re.I):
@@ -409,6 +435,63 @@ def news_feed(espn_idmap: dict, nidx: dict) -> list[Signal]:
             label = "SEASON" if games >= 99 else ("NEWS" if games < 0.3 else ("OUT" if games >= 1 else "QUESTIONABLE"))
             out.append(Signal(pid, label, games, a.get("headline", "")[:200], "ESPN news", pub,
                               positive=pos and not sev))
+    return out
+
+
+INJURY_WORDS = re.compile(r"injur|hurt|ankle|knee|hamstring|groin|concussion|mri|surgery|out for|ruled out|"
+                          r"week-to-week|\bir\b|injured reserve|torn|sprain|strain|fracture|questionable|doubtful|"
+                          r"cleared|activated|return", re.I)
+
+
+def unique_names(players: pd.DataFrame, positions=("QB", "RB", "WR", "TE")) -> dict:
+    """Full name -> gsis id, only for names that belong to exactly one skill player."""
+    p = players[players.position.isin(positions) & players.latest_team.notna()]
+    counts = p.display_name.value_counts()
+    return {n: pid for n, pid in zip(p.display_name, p.gsis_id) if counts.get(n, 0) == 1 and len(n.split()) >= 2}
+
+
+def rss_feed(names: dict) -> list[Signal]:
+    """Injury news from public RSS feeds: a backup for when ESPN's API refuses us."""
+    import xml.etree.ElementTree as ET
+
+    out, errors = [], []
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
+    for label, url in RSS_FEEDS:
+        try:
+            r = sources.SESSION.get(url, headers=ESPN_HEADERS, timeout=30)
+            r.raise_for_status()
+            root = ET.fromstring(r.content)
+        except Exception as e:
+            errors.append(f"{label}: {type(e).__name__}")
+            continue
+        for item in root.iter("item"):
+            title = (item.findtext("title") or "").strip()
+            desc = re.sub(r"<[^>]+>", " ", item.findtext("description") or "").strip()
+            text = f"{title}. {desc}"
+            if not INJURY_WORDS.search(text):
+                continue
+            when = item.findtext("pubDate") or ""
+            try:
+                ts = pd.Timestamp(when)
+                if ts.tz is None:
+                    ts = ts.tz_localize("UTC")
+                if ts < cutoff:
+                    continue
+                when = ts.isoformat()
+            except Exception:
+                when = pd.Timestamp.now(tz="UTC").isoformat()
+            # only the headline's subject: a teammate named in the body isn't the injured one
+            for name, pid in names.items():
+                if name not in title:
+                    continue
+                sev = text_severity(text)
+                games = sev[0] if sev else 0.0
+                status = "SEASON" if games >= 99 else ("NEWS" if games < 0.3 else
+                                                      ("OUT" if games >= 1 else "QUESTIONABLE"))
+                out.append(Signal(pid, status, games, title[:200], f"{label} news", when,
+                                  positive=bool(POSITIVE.search(text)) and not sev))
+    if errors and not out:
+        raise RuntimeError("; ".join(errors))
     return out
 
 

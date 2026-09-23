@@ -102,14 +102,15 @@ def main():
     game_dates = model.team_game_dates(sched, season)
     for label, fn in (("ESPN injury desk", lambda: injuries.espn_feed(espn_ids, nidx, game_dates)),
                       ("Sleeper", lambda: injuries.sleeper_feed(ids, nidx)),
-                      ("ESPN news", lambda: injuries.news_feed(espn_ids, nidx))):
+                      ("ESPN news", lambda: injuries.news_feed(espn_ids, nidx)),
+                      ("News wires", lambda: injuries.rss_feed(injuries.unique_names(players)))):
         try:
             got = fn()
             sig += got
             feed_status[label] = f"{len(got)} players"
             log(f"  {label}: {len(got)} signals")
         except Exception as e:
-            feed_status[label] = f"unavailable ({type(e).__name__})"
+            feed_status[label] = f"unavailable ({e if isinstance(e, RuntimeError) else type(e).__name__})"
             log(f"  {label} unavailable: {e}")
     if league:
         sig += injuries.league_signals(league.injuries)
