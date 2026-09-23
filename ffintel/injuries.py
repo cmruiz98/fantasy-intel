@@ -84,8 +84,33 @@ class Signal:
 WORDNUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
            "a couple": 2, "couple": 2, "a few": 3, "few": 3, "several": 4, "multiple": 3}
 NEGATION = re.compile(r"(avoid|avoided|ruled out an?|no sign of|not an?|not (?:expected|believed|likely|going) to(?: \w+)?|negative|clean|isn't|is not|no structural|won't)\W+(?:\w+\W+){0,2}$", re.I)
-POSITIVE = re.compile(r"\b(cleared|will play|expected to play|full(?:y)? participat|full practice|no injury designation|"
-                      r"removed from (?:the )?injury report|activated|returns? to practice fully|good to go)\b", re.I)
+POSITIVE = re.compile(r"\b(cleared|gained clearance|will play|expected to play|full(?:y)? participat|full practice|"
+                      r"no injury designation|removed from (?:the )?injury report|activated|will suit up|suited up|"
+                      r"returns? to practice fully|good to go|shed(?: the)? (?:questionable|doubtful)|"
+                      r"upgraded to (?:full|active))\b", re.I)
+NAME_RE = re.compile(r"\b[A-Z][a-z]+(?:['\-][A-Za-z]+)?\s+[A-Z][a-zA-Z.'\-]+\b")
+
+
+def about_player(text: str, full_name: str) -> str:
+    """Keep only the parts of a write-up that are about this player.
+
+    Injury blurbs routinely describe teammates ("...with Jordan Addison expected to
+    miss multiple weeks"), and reading those as news about the subject is how a
+    healthy player ends up projected for zero.
+    """
+    if not text or not full_name:
+        return ""
+    last = full_name.split()[-1]
+    kept = []
+    for sent in re.split(r"(?<=[.!?])\s+", text):
+        if last.lower() not in sent.lower():
+            continue
+        others = [n for n in NAME_RE.findall(sent) if last not in n and full_name not in n]
+        if others:  # trim the sentence where it starts talking about someone else
+            cut = min(sent.find(n) for n in others)
+            sent = sent[:cut]
+        kept.append(sent)
+    return " ".join(kept)
 
 
 def _neg(text, start):
@@ -130,7 +155,9 @@ def text_severity(text: str) -> tuple[float, str] | None:
                           (r"\bsurgery\b", 4.0, "surgery"), (r"\bfracture|\bbroken\b", 4.0, "fracture"),
                           (r"concussion", 1.0, "concussion protocol"), (r"ruled out|will not play|won't play|will miss", 1.0, "ruled out"),
                           (r"(?:undergo|undergoing|will have|scheduled for|awaiting|set for|pending)(?: an?)? mri|mri (?:is )?(?:scheduled|pending)", 0.5, "awaiting MRI"), (r"\bdoubtful\b", 0.8, "doubtful"),
-                          (r"day[- ]to[- ]day|game[- ]time decision|\bquestionable\b", 0.3, "day-to-day")):
+                          (r"day[- ]to[- ]day|game[- ]time decision|\bquestionable\b", 0.3, "day-to-day"),
+                          (r"sit out|will not practice|did not practice|miss(?:ed|ing)? (?:today's |wednesday's |thursday's |friday's )?practice|"
+                           r"limited (?:in|at) practice", 0.3, "practice absence")):
         m = re.search(pat, t)
         if m:
             take(g, label, m)
@@ -359,22 +386,29 @@ def espn_feed(espn_idmap: dict, nidx: dict, game_dates: dict) -> list[Signal]:
             details = it.get("details") or {}
             body = " ".join(str(details.get(k, "")) for k in ("side", "type", "detail") if details.get(k)).strip()
             comment = it.get("longComment") or it.get("shortComment") or ""
+            mine = about_player(comment, ath.get("displayName", ""))
             games = BASE_GAMES.get(status, 0.0) if status else 0.0
-            sev = text_severity(comment)
-            label = status or "NEWS"
+            sev = text_severity(mine)  # only what the blurb says about HIM
+            if sev and not status:
+                sev = (min(sev[0], 2.0), sev[1])  # no designation: don't over-read a write-up
             if sev and sev[0] > games:
                 games = sev[0]
-                if sev[0] >= 99:
-                    label = "SEASON"
+            label = status or ("SEASON" if games >= 99 else "OUT" if games >= 1 else
+                               "QUESTIONABLE" if games >= 0.3 else "NEWS")
             if details.get("returnDate"):
                 g = _games_from_return(details["returnDate"], tabbr, game_dates)
                 if g is not None and status in ("OUT", "IR", "PUP", "SUSPENSION", None, "SEASON"):
                     games = max(g, games if label == "SEASON" else 0)
+            positive = bool(POSITIVE.search(mine or comment))
+            if positive and not status:
+                games, label = 0.0, "NEWS"  # the write-up says he is fine
+            if games <= 0 and not status and not positive:
+                continue  # a blurb about a healthy player, not an injury
             detail = (f"{body}. " if body else "") + (comment[:260] if comment else (status or "").title())
             if details.get("returnDate"):
                 detail += f" (ESPN return estimate: {details['returnDate'][:10]})"
             out.append(Signal(pid, label, games, detail, "ESPN injury desk", it.get("date", ""),
-                              positive=bool(POSITIVE.search(comment)) and games < 0.5))
+                              positive=positive))
     return out
 
 
@@ -432,6 +466,8 @@ def news_feed(espn_idmap: dict, nidx: dict) -> list[Signal]:
             sev = text_severity(text)
             pos = bool(POSITIVE.search(text))
             games = sev[0] if sev else 0.0
+            if games < 0.3 and not pos:
+                continue  # mentions an injury topic but says nothing about him missing time
             label = "SEASON" if games >= 99 else ("NEWS" if games < 0.3 else ("OUT" if games >= 1 else "QUESTIONABLE"))
             out.append(Signal(pid, label, games, a.get("headline", "")[:200], "ESPN news", pub,
                               positive=pos and not sev))
@@ -486,6 +522,9 @@ def rss_feed(names: dict) -> list[Signal]:
                     continue
                 sev = text_severity(text)
                 games = sev[0] if sev else 0.0
+                pos = bool(POSITIVE.search(text))
+                if games < 0.3 and not pos:
+                    continue  # injury-flavoured headline, no actual availability news
                 status = "SEASON" if games >= 99 else ("NEWS" if games < 0.3 else
                                                       ("OUT" if games >= 1 else "QUESTIONABLE"))
                 out.append(Signal(pid, status, games, title[:200], f"{label} news", when,
@@ -562,8 +601,8 @@ def combine(signals: list[Signal], report_weeks: dict, player_team: dict, last_p
         status = head.status
         if status in ("HEALTHY", "NEWS") or (cleared and games <= 0.1 and status not in ("RETURNED",)):
             status = "CLEARED" if cleared and negatives else ("" if status == "HEALTHY" else status)
-        if not status and games == 0:
-            continue
+        if games == 0 and not (cleared and negatives):
+            continue  # nothing here says he might miss time
         p_miss = max((s.p_miss if s.p_miss is not None else min(s.games, 1.0) for s in negatives), default=0.0)
         if cleared:
             p_miss = min(p_miss, 0.1)

@@ -44,7 +44,7 @@ PLAYER_COLS = ["player_id", "name", "position", "team", "age", "headshot", "game
                "target_share", "l3_tshare", "air_yards_share", "wopr", "targets", "receptions", "rec_yds",
                "carries", "rush_yds", "pass_yds", "pass_tds", "ints", "tds", "touches", "rz_targets",
                "ez_targets", "rz_carries", "i10_carries", "rz_tgt_share", "rz_rush_share", "xfp_total",
-               "inj_status", "inj_detail", "inj_source", "inj_updated", "inj_signals", "fill_in_for", "play_prob", "exp_missed", "ros_games", "ros_points",
+               "inj_status", "inj_detail", "inj_source", "inj_updated", "inj_signals", "fill_in_for", "play_prob", "on_bye", "exp_missed", "ros_games", "ros_points",
                "opponent", "matchup", "week_proj", "vor_ppg", "ros_value", "pos_rank", "ovr_rank",
                "own_pos_rank", "consensus_pos_rank", "consensus_sources", "fp_ros", "fp_week", "espn_proj",
                "fp_ros_best", "fp_ros_worst", "market_ros_points", "value_gap", "gap_ppg", "rank_gap",

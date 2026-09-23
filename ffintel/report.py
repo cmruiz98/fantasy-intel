@@ -62,7 +62,10 @@ const inj=p=>p.inj_status?`<span class="tag ${INJ_CLASS[p.inj_status]||'I'}" tit
 const ago=t=>{if(!t)return '';const d=new Date(t);if(isNaN(d))return '';const h=(Date.now()-d)/36e5;return h<1?'just now':h<24?Math.round(h)+'h ago':Math.round(h/24)+'d ago'};
 const sigList=p=>(p.inj_signals||[]).map(s=>`<div style="padding:6px 0;border-bottom:1px dashed var(--line)"><b>${esc(INJ_LABEL[s.status]||s.status)}</b> <span class="mute">· ${esc(s.source)}${s.when?' · '+ago(s.when):''}</span><br><span style="font-size:13px">${esc(s.detail)}</span></div>`).join('');
 const star=p=>p.star?'<span class="tag S" title="Proven star">★</span>':'';
-const nm=p=>`${pos(p.position)}<b>${esc(p.name)}</b> <span class="mute">${esc(p.team||'')}</span> ${star(p)} ${inj(p)}`;
+const bye=p=>p.on_bye?'<span class="tag" style="background:var(--chip);color:var(--mute)">BYE</span>':'';
+const nm=p=>`${pos(p.position)}<b>${esc(p.name)}</b> <span class="mute">${esc(p.team||'')}</span> ${star(p)} ${bye(p)} ${inj(p)}`;
+const playOdds=p=>p.on_bye?'bye':pct(p.play_prob);
+const wk=p=>p.on_bye?'<span class="mute">bye</span>':f1(p.week_proj);
 const gen=new Date(D.generated);
 $('#meta').textContent=`${D.season} season · week ${D.week}${D.plan_week!==D.week?` (planning for week ${D.plan_week})`:''} · stats through week ${D.data_through_week} · updated ${gen.toLocaleString()}`;
 
@@ -86,7 +89,7 @@ function detail(id){
   $('#dlg').innerHTML=`<button class="x" onclick="dlg.close()">×</button>
   <h2 style="margin:0 0 2px">${esc(p.name)} ${star(p)} ${verdict(p.verdict)}</h2>
   <p class="sub">${p.position} · ${esc(p.team||'')} · age ${f0(p.age)}${p.owner_name?' · on '+esc(p.owner_name):' · free agent'}</p>
-  ${p.inj_status?`<div class="banner"><b>${esc(INJ_LABEL[p.inj_status]||p.inj_status)}</b> · ${pct(p.play_prob)} to play next week · ${f1(p.exp_missed)} games expected missed<br>${esc(p.inj_detail)}</div>
+  ${p.inj_status?`<div class="banner"><b>${esc(INJ_LABEL[p.inj_status]||p.inj_status)}</b> · ${p.on_bye?'on bye next week':pct(p.play_prob)+' to play next week'} · ${f1(p.exp_missed)} games expected missed<br>${esc(p.inj_detail)}</div>
    ${(p.inj_signals||[]).length>1?`<details style="margin:-6px 0 12px"><summary class="sub" style="cursor:pointer">All ${p.inj_signals.length} injury signals</summary>${sigList(p)}</details>`:''}`:''}
   ${p.fill_in_for?`<div class="banner" style="background:var(--goodbg);color:var(--good)">Took over for injured ${esc(p.fill_in_for)} last game</div>`:''}
   ${p.note?`<p class="sub">${esc(p.note)}</p>`:''}
@@ -107,7 +110,7 @@ function detail(id){
    <div><span>RZ carries / inside 10</span><b>${f0(p.rz_carries)} / ${f0(p.i10_carries)}</b></div><div><span>End-zone targets</span><b>${f0(p.ez_targets)}</b></div>
    <div><span>TDs</span><b>${f0(p.tds)}</b></div><div><span>Expected pts (total)</span><b>${f1(p.xfp_total)}</b></div>
    ${p.position==='QB'?`<div><span>Pass yds / TD / INT</span><b>${f0(p.pass_yds)} / ${f0(p.pass_tds)} / ${f0(p.ints)}</b></div>`:''}
-   <div><span>Next opp. / matchup</span><b>${esc(p.opponent||'bye')} ${p.matchup?'×'+(+p.matchup).toFixed(2):''}</b></div>
+   <div><span>Next opp. / matchup</span><b>${p.on_bye?'BYE':esc(p.opponent||'—')} ${p.matchup?'×'+(+p.matchup).toFixed(2):''}</b></div>
    <div><span>FantasyPros ROS rank</span><b>${p.fp_ros?f1(p.fp_ros):'–'} <span class="mute">(${p.fp_ros_best??'–'}–${p.fp_ros_worst??'–'})</span></b></div>
    <div><span>ESPN ROS proj.</span><b>${f0(p.espn_proj)}</b></div>
   </div>`;
@@ -115,7 +118,7 @@ function detail(id){
 }
 
 const RK=[{k:'name',h:'Player',l:1,f:nm},{k:'proj_ppg',h:'Proj',f:x=>f1(x.proj_ppg),t:'Our projected points per game'},
- {k:'week_proj',h:'Next wk',f:x=>f1(x.week_proj)},{k:'ros_points',h:'ROS',f:x=>f0(x.ros_points),t:'Rest-of-season points (injuries & byes included)'}];
+ {k:'week_proj',h:'Next wk',f:x=>wk(x)},{k:'ros_points',h:'ROS',f:x=>f0(x.ros_points),t:'Rest-of-season points (injuries & byes included)'}];
 
 const views={
  team(){
@@ -126,9 +129,9 @@ const views={
   const hurt=t.players.filter(p=>p.inj_status&&!['CLEARED','RETURNED'].includes(p.inj_status)).sort((a,b)=>(b.exp_missed||0)-(a.exp_missed||0));
   return `${L.mock?'<div class="banner">Demo mode: the league below is made up. Real players and stats, fake rosters.</div>':''}
   ${L.note?`<div class="banner">${esc(L.note)}</div>`:''}
-  ${hurt.length?`<div class="card"><h2>Injury alerts on your roster</h2>${hurt.map(p=>`<div class="p" style="padding:6px 0;cursor:pointer" onclick="detail('${p.player_id}')">${nm(p)} <span class="mute">${pct(p.play_prob)} to play next week</span><div class="why">${esc(p.inj_detail)} · ${esc(p.inj_source)} ${ago(p.inj_updated)}</div></div>`).join('')}</div>`:''}
+  ${hurt.length?`<div class="card"><h2>Injury alerts on your roster</h2>${hurt.map(p=>`<div class="p" style="padding:6px 0;cursor:pointer" onclick="detail('${p.player_id}')">${nm(p)} <span class="mute">${p.on_bye?'on bye next week':pct(p.play_prob)+' to play next week'}</span><div class="why">${esc(p.inj_detail)} · ${esc(p.inj_source)} ${ago(p.inj_updated)}</div></div>`).join('')}</div>`:''}
   <div class="card"><h2>${esc(L.my_team)}</h2><p class="sub">Power rank ${me.power_rank} of ${t.strength.length} by projected rest-of-season lineup (${f1(me.lineup_ppw)} pts/week). Position ranks, weakest first:</p><div class="grid">${needs}</div></div>
-  ${moves.length?`<div class="card"><h2>Lineup changes for week ${D.plan_week}</h2><p class="sub">Your ESPN lineup vs. our best lineup.</p>${moves.map(p=>`<div>${p.lineup_note==='Start'?'<b class="good">Start</b>':'<b class="bad">Bench</b>'} ${nm(p)} <span class="mute">${f1(p.week_proj)} proj</span></div>`).join('')}</div>`:''}
+  ${moves.length?`<div class="card"><h2>Lineup changes for week ${D.plan_week}</h2><p class="sub">Your ESPN lineup vs. our best lineup.</p>${moves.map(p=>`<div>${p.lineup_note==='Start'?'<b class="good">Start</b>':'<b class="bad">Bench</b>'} ${nm(p)} <span class="mute">${p.on_bye?'on bye':f1(p.week_proj)+' proj'}</span></div>`).join('')}</div>`:''}
   <div class="card"><h2>Roster</h2>${table(t.players,[...RK,{k:'start_this_week',h:'Start?',f:x=>x.start_this_week?'✓':''},{k:'consensus_pos_rank',h:'Rank us/mkt',f:x=>`${x.position}${f0(x.own_pos_rank)} / ${x.consensus_pos_rank?x.position+f0(x.consensus_pos_rank):'–'}`},{k:'verdict',h:'Market',f:x=>verdict(x.verdict)}],{sort:'ros_points'})}</div>
   <div class="card"><h2>League power rankings</h2>${table(t.strength,[{k:'name',h:'Team',l:1,f:x=>x.team_id===t.team_id?`<b>${esc(x.name)}</b>`:esc(x.name)},{k:'record',h:'Rec'},{k:'lineup_ppw',h:'Lineup/wk',f:x=>f1(x.lineup_ppw)},{k:'QB_ppw',h:'QB',f:x=>f1(x.QB_ppw)},{k:'RB_ppw',h:'RB',f:x=>f1(x.RB_ppw)},{k:'WR_ppw',h:'WR',f:x=>f1(x.WR_ppw)},{k:'TE_ppw',h:'TE',f:x=>f1(x.TE_ppw)}],{sort:'lineup_ppw'})}</div>`;
  },
@@ -165,7 +168,7 @@ const views={
   const all=P.filter(p=>p.inj_status&&rel(p)).sort((a,b)=>b.ros_value-a.ros_value);
   const feeds=Object.entries(D.injury_feeds||{}).map(([k,v])=>`<span class="tag ${/unavailable/.test(v)?'O':'U'}" style="margin:2px">${esc(k)}: ${esc(v)}</span>`).join(' ');
   const fills=(D.fill_ins||[]).map(f=>{const p=byId[f.fill_in_id];return `<div style="padding:6px 0;border-bottom:1px dashed var(--line)">${pos(f.position)}<b>${esc(f.fill_in)}</b> <span class="mute">${esc(f.team)}</span> took over for <b>${esc(f.injured)}</b> <span class="mute">(${f.plays} plays after the injury)</span>${p?` · <a style="color:var(--acc);cursor:pointer" onclick="detail('${p.player_id}')">${p.owner_name?'on '+esc(p.owner_name):'free agent'}</a>`:''}</div>`}).join('');
-  const cols=[{k:'name',h:'Player',l:1,f:nm},{k:'inj_detail',h:'Detail',l:1,f:x=>`<div class="why">${esc(x.inj_detail)}</div>`},{k:'play_prob',h:'Play next wk',f:x=>pct(x.play_prob)},{k:'exp_missed',h:'Exp. missed',f:x=>f1(x.exp_missed)},{k:'owner_name',h:'Rostered',l:1,f:x=>esc(x.owner_name||'FA')},{k:'inj_updated',h:'Source',l:1,f:x=>`${esc(x.inj_source)} <span class="mute">${ago(x.inj_updated)}</span>`}];
+  const cols=[{k:'name',h:'Player',l:1,f:nm},{k:'inj_detail',h:'Detail',l:1,f:x=>`<div class="why">${esc(x.inj_detail)}</div>`},{k:'play_prob',h:'Play next wk',f:x=>playOdds(x)},{k:'exp_missed',h:'Exp. missed',f:x=>f1(x.exp_missed)},{k:'owner_name',h:'Rostered',l:1,f:x=>esc(x.owner_name||'FA')},{k:'inj_updated',h:'Source',l:1,f:x=>`${esc(x.inj_source)} <span class="mute">${ago(x.inj_updated)}</span>`}];
   return `<div class="card"><h2>Hurt in the last game</h2><p class="sub">Read straight from play-by-play within hours of each game, days before the official injury report. "Left game" means he never came back; how serious it is shows up once ESPN, Sleeper or the practice report weigh in.</p>${table(game,cols,{})}</div>
   ${fills?`<div class="card"><h2>Who stepped in</h2><p class="sub">The teammate who took the injured player's work for the rest of the game. Often the week's best waiver add.</p>${fills}</div>`:''}
   <div class="card"><h2>Every injury status</h2><p class="sub">The most serious current signal wins; tap a player to see every source. Stale info is dropped automatically (e.g. last week's "Questionable" once he's played, or an in-game injury once the next official report is out).</p>${table(all,[...cols.slice(0,1),{k:'inj_status',h:'Status',l:1,f:x=>inj(x)},...cols.slice(1)],{})}</div>

@@ -294,6 +294,7 @@ def build_ratings(cur, hist, players, sched, inj, extra_signals=None, short_game
     df["rem_weeks"] = df.team.map(lambda t: len(weeks.get(t, [])))
     plan_week = rem.get("plan_week", cur_week)
     df["plays_this_week"] = df.team.map(lambda t: plan_week in weeks.get(t, []))
+    df["on_bye"] = ~df.plays_this_week & (df.rem_weeks > 0)
     missed = df.exp_missed_raw.fillna(0)
     df["exp_missed"] = np.minimum(missed, df.rem_weeks)
     df["play_prob"] = np.where(df.plays_this_week, 1 - df.p_miss_next.fillna(0).clip(0, 1), 0.0)
