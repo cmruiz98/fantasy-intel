@@ -84,8 +84,10 @@ def season_to_date(cur: pd.DataFrame, short_games: set = frozenset()) -> pd.Data
     if cur.empty:
         return pd.DataFrame(columns=["player_id"])
     c = cur.sort_values("week")
-    real = _real_games(c)
-    if short_games:  # games he left injured say little about his true scoring rate
+    # Every game he was active for counts, even a 5% snap cameo: that IS the evidence
+    # that he has no role. Only games he left injured are thrown out.
+    real = c
+    if short_games:
         keep = [(p, w) not in short_games for p, w in zip(real.player_id, real.week)]
         real = real[keep]
     base = real.groupby("player_id").agg(
@@ -313,6 +315,54 @@ def build_ratings(cur, hist, players, sched, inj, extra_signals=None, short_game
     return df.reset_index(drop=True), meta
 
 
+ROLE_FULL = {"QB": 0.70, "RB": 0.45, "WR": 0.60, "TE": 0.55}      # snaps a real starter plays
+OPP_FULL = {"QB": 30.0, "RB": 14.0, "WR": 7.0, "TE": 5.0}         # touches + targets per game
+
+
+def role_share(df: pd.DataFrame) -> pd.Series:
+    """How big his role is right now, from the last two games (season average as backup)."""
+    return df[["l2_snap", "l3_snap", "snap_pct"]].max(axis=1)
+
+
+def opportunity_share(df: pd.DataFrame) -> pd.Series:
+    """Touches and targets per game against what a starter at the position gets.
+
+    Some real starters play few snaps: a committee back with 20 carries, a receiver
+    in a rotation. Counting their actual work keeps the role ceiling from punishing them,
+    and it covers players whose snap counts are missing.
+    """
+    games = df.all_games.fillna(0).clip(lower=1)
+    opp = (df.touches.fillna(0) + df.targets.fillna(0)) / games
+    qb = df.position == "QB"
+    opp = np.where(qb, (df.pass_yds.fillna(0) / 7.0 + df.touches.fillna(0)) / games, opp)
+    return pd.Series(opp, index=df.index) / df.position.map(OPP_FULL)
+
+
+def apply_role_ceiling(df: pd.DataFrame, repl: dict) -> pd.DataFrame:
+    """A player can only score with the opportunities he actually gets.
+
+    Fantasy points come from touches and targets, not talent in the abstract. A
+    former starter now playing 10% of snaps cannot produce like his history says,
+    so his value above replacement is scaled by the role he currently holds. Players
+    who haven't played yet this season are left alone (their situation is unknown),
+    and the injury signals handle anyone who is hurt.
+    """
+    df = df.copy()
+    role = role_share(df)
+    snap_factor = role / df.position.map(ROLE_FULL)
+    factor = np.clip(np.fmax(snap_factor, opportunity_share(df)), 0.0, 1.0)
+    played = df.all_games.fillna(0) > 0
+    known_role = played & pd.notna(factor)
+    base = df.position.map(repl)
+    capped = base + (df.proj_ppg - base) * factor
+    df["role_share"] = role
+    df["role_factor"] = np.where(known_role, factor, np.nan)
+    df["proj_ppg_raw"] = df.proj_ppg
+    df["proj_ppg"] = np.where(known_role & (capped < df.proj_ppg), capped, df.proj_ppg)
+    df["ros_points"] = df.proj_ppg * df.ros_games
+    return df
+
+
 def replacement_levels(df: pd.DataFrame, teams: int, lineup: dict, col="proj_ppg") -> dict:
     """PPG of the best player left after every team fills its starting lineup."""
     pool = df[df.ros_games > 0].sort_values(col, ascending=False)
@@ -334,6 +384,9 @@ def replacement_levels(df: pd.DataFrame, teams: int, lineup: dict, col="proj_ppg
 
 
 def add_value(df: pd.DataFrame, teams: int, lineup: dict) -> tuple[pd.DataFrame, dict]:
+    # first pass sets replacement level, then the role ceiling is applied against it
+    repl = replacement_levels(df, teams, lineup)
+    df = apply_role_ceiling(df, repl)
     repl = replacement_levels(df, teams, lineup)
     df = df.copy()
     df["vor_ppg"] = df.proj_ppg - df.position.map(repl)

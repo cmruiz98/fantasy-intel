@@ -40,7 +40,7 @@ def clean(o):
 
 PLAYER_COLS = ["player_id", "name", "position", "team", "age", "headshot", "games", "all_games", "proj_ppg",
                "prior_ppg", "prior_source", "prior_weight_games", "current_weight", "cur_ppg", "cur_xfp",
-               "l3_ppg", "weekly_pts", "trend", "role_change", "pts_total", "snap_pct", "l2_snap",
+               "l3_ppg", "weekly_pts", "role_share", "role_factor", "proj_ppg_raw", "trend", "role_change", "pts_total", "snap_pct", "l2_snap",
                "target_share", "l3_tshare", "air_yards_share", "wopr", "targets", "receptions", "rec_yds",
                "carries", "rush_yds", "pass_yds", "pass_tds", "ints", "tds", "touches", "rz_targets",
                "ez_targets", "rz_carries", "i10_carries", "rz_tgt_share", "rz_rush_share", "xfp_total",

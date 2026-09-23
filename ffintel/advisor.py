@@ -107,6 +107,13 @@ class Advisor:
         droppable = sorted([r for r in mine if r["player_id"] not in starters], key=lambda r: r["ros_value"])
         drop = droppable[0] if droppable else None
         fa = self.df[self.df.owner.isna() & (self.df.ros_games > 0)]
+        # A pickup needs a reason to score: real recent usage, a role that is growing,
+        # or a job he just inherited from an injured starter.
+        recent_work = (fa.touches.fillna(0) + fa.targets.fillna(0)) / fa.all_games.clip(lower=1)
+        has_role = (fa.role_share.fillna(0) >= 0.3) | (recent_work >= 4)
+        inherits = fa.fill_in_for.notna() | (fa.role_change == 1)
+        unseen = fa.all_games.fillna(0) == 0  # hasn't played yet: judged on history alone
+        fa = fa[has_role | inherits | (unseen & fa.inj_status.isna())]
         fa = fa.sort_values("ros_value", ascending=False).head(120)
         out = []
         for r in fa.to_dict("records"):
@@ -116,6 +123,8 @@ class Advisor:
             score = gain_week * self.weeks_left + 0.35 * depth
             own = self.league.ownership.get(r["player_id"], (None, None))
             reasons = []
+            if r.get("role_share"):
+                reasons.append(f"{r['role_share']:.0%} of snaps")
             if gain_week > 0.2:
                 reasons.append(f"+{gain_week:.1f} pts/wk to your lineup")
             if r.get("l2_snap") and r.get("snap_pct") and r["l2_snap"] - r["snap_pct"] >= 0.08:
