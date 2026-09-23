@@ -99,7 +99,11 @@ class Advisor:
         return out
 
     # ------------------------------------------------------------------ waivers
-    def waivers(self, limit=25) -> list[dict]:
+    def available_now(self, rows):
+        """Players who can actually help you in the coming week."""
+        return [r for r in rows if (r.get("exp_missed") or 0) < 1 and (r.get("play_prob") or 0) >= 0.5]
+
+    def waivers(self, limit=25, stashes=False) -> list[dict]:
         tid = self.league.my_team_id
         mine = self.roster_rows(tid)
         base = self.lineup_value(mine)
@@ -114,7 +118,10 @@ class Advisor:
         inherits = fa.fill_in_for.notna() | (fa.role_change == 1)
         unseen = fa.all_games.fillna(0) == 0  # hasn't played yet: judged on history alone
         fa = fa[has_role | inherits | (unseen & fa.inj_status.isna())]
-        fa = fa.sort_values("ros_value", ascending=False).head(120)
+        # Players who won't play for a while are stashes, not this week's pickups.
+        hurt = (fa.exp_missed.fillna(0) >= 1) | (fa.play_prob.fillna(1) < 0.5)
+        fa = fa[hurt] if stashes else fa[~hurt]
+        fa = fa.sort_values("ros_value", ascending=False).head(60 if stashes else 120)
         out = []
         for r in fa.to_dict("records"):
             new = [x for x in mine if not drop or x["player_id"] != drop["player_id"]] + [r]
@@ -141,6 +148,8 @@ class Advisor:
                 reasons.append("we rate him above consensus")
             if isinstance(r.get("fill_in_for"), str):
                 reasons.insert(0, f"took over for injured {r['fill_in_for']}")
+            if stashes:
+                reasons.append(f"out ~{r['exp_missed']:.0f} more game{'s' if (r['exp_missed'] or 0) >= 1.5 else ''}")
             out.append({**r, "gain_week": round(gain_week, 2), "score": round(score, 1),
                         "drop": drop["name"] if drop else "", "pct_owned": own[0], "pct_change": own[1],
                         "waiver_status": self.league.waiver_status.get(r["player_id"], ""),

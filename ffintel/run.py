@@ -147,7 +147,8 @@ def main():
         log("Building waiver and trade advice")
         out["league"] = {
             "name": league.name, "mock": league.mock, "my_team": league.teams[league.my_team_id]["name"],
-            "team": adv.my_team(), "waivers": adv.waivers(), "trades": adv.trade_lists(),
+            "team": adv.my_team(), "waivers": adv.waivers(), "stashes": adv.waivers(limit=10, stashes=True),
+            "trades": adv.trade_lists(),
             "trade_ideas": adv.trade_ideas(), "note": league.error}
     elif league:
         listing = ", ".join(f"{k} = {v['name']}" for k, v in league.teams.items())
@@ -165,7 +166,8 @@ def main():
                                     "score", "drop", "waiver_status", "why", "owner_name", "ros_ppw", "mkt_ppw"}
         L = out["league"]
         L["team"]["players"] = [{k: v for k, v in p.items() if k in keep} for p in L["team"]["players"]]
-        L["waivers"] = [{k: v for k, v in p.items() if k in keep} for p in L["waivers"]]
+        for k in ("waivers", "stashes"):
+            L[k] = [{k2: v for k2, v in p.items() if k2 in keep} for p in L[k]]
         for k in ("buy_low", "sell_high"):
             L["trades"][k] = [{k2: v for k2, v in p.items() if k2 in keep} for p in L["trades"][k]]
 
