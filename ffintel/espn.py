@@ -28,6 +28,8 @@ class League:
     injuries: dict = field(default_factory=dict)   # gsis_id -> (status, detail)
     projections: dict = field(default_factory=dict)  # gsis_id -> ESPN ROS points
     ownership: dict = field(default_factory=dict)    # gsis_id -> (pct owned, pct change)
+    draft_ranks: dict = field(default_factory=dict)  # gsis_id -> ESPN preseason draft rank
+    drafted: dict = field(default_factory=dict)      # gsis_id -> overall pick in YOUR draft
     waiver_status: dict = field(default_factory=dict)  # gsis_id -> FREEAGENT / WAIVERS
     mock: bool = False
     error: str = ""
@@ -110,6 +112,14 @@ def fetch(players: pd.DataFrame, ids: pd.DataFrame | None, season: int, week: in
         _player_pool(s, url, league, idmap, season, week)
     except Exception as ex:  # rosters still usable without it
         league.error = f"ESPN player pool unavailable: {ex}"
+    try:
+        d = s.get(url, params={"view": "mDraftDetail"}, timeout=60).json()
+        for pick in (d.get("draftDetail") or {}).get("picks", []) or []:
+            gid = idmap.get(int(pick.get("playerId", 0)))
+            if gid:
+                league.drafted[gid] = int(pick.get("overallPickNumber", 0))
+    except Exception:
+        pass  # older leagues or keeper formats may not expose the draft
     return league
 
 
@@ -145,6 +155,12 @@ def _player_pool(s, url, league, idmap, season, week):
                 act = stt.get("appliedTotal")
         if proj is not None:
             league.projections[gid] = max(0.0, proj - (act or 0))
+        ranks = pl.get("draftRanksByRankType") or {}
+        for kind in ("PPR", "STANDARD"):
+            r = (ranks.get(kind) or {}).get("rank")
+            if r:
+                league.draft_ranks[gid] = int(r)
+                break
 
 
 def mock(df: pd.DataFrame, seed: int = 7) -> League:

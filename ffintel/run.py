@@ -39,13 +39,13 @@ def clean(o):
 
 
 PLAYER_COLS = ["player_id", "name", "position", "team", "age", "headshot", "games", "all_games", "proj_ppg",
-               "prior_ppg", "prior_source", "prior_weight_games", "current_weight", "cur_ppg", "cur_xfp",
-               "l3_ppg", "weekly_pts", "role_share", "role_factor", "proj_ppg_raw", "trend", "role_change", "pts_total", "snap_pct", "l2_snap",
+               "prior_ppg", "prior_source", "prior_weight_games", "preseason_ppg", "preseason_weight_games", "current_weight", "cur_ppg", "cur_xfp",
+               "l3_ppg", "weekly_pts", "role_share", "role_factor", "proj_ppg_raw", "trend", "role_change", "role_growth", "pts_total", "snap_pct", "l2_snap",
                "target_share", "l3_tshare", "air_yards_share", "wopr", "targets", "receptions", "rec_yds",
                "carries", "rush_yds", "pass_yds", "pass_tds", "ints", "tds", "touches", "rz_targets",
                "ez_targets", "rz_carries", "i10_carries", "rz_tgt_share", "rz_rush_share", "xfp_total",
                "inj_status", "inj_detail", "inj_source", "inj_updated", "inj_signals", "fill_in_for", "play_prob", "on_bye", "exp_missed", "ros_games", "ros_points",
-               "opponent", "matchup", "week_proj", "vor_ppg", "ros_value", "pos_rank", "ovr_rank",
+               "qb", "qb_was", "qb_pass_ppg", "qb_factor", "team_qb_factor", "qb_change", "qb_starter", "opponent", "matchup", "week_proj", "vor_ppg", "ros_value", "pos_rank", "ovr_rank",
                "own_pos_rank", "consensus_pos_rank", "consensus_sources", "fp_ros", "fp_week", "espn_proj",
                "fp_ros_best", "fp_ros_worst", "market_ros_points", "value_gap", "gap_ppg", "rank_gap",
                "verdict", "note", "star", "owner", "owner_name", "pct_owned", "pct_change"]
@@ -115,7 +115,9 @@ def main():
     if league:
         sig += injuries.league_signals(league.injuries)
         feed_status["Your ESPN league"] = f"{len(league.injuries)} players"
-    df, meta = model.build_ratings(cur, hist, players, sched, inj, sig, short_games)
+    df, meta = model.build_ratings(cur, hist, players, sched, inj, sig, short_games,
+                                   draft_ranks=league.draft_ranks if league else None,
+                                   drafted=league.drafted if league else None)
     names = dict(zip(players.gsis_id, players.display_name))
     rated = dict(zip(df.player_id, df.proj_ppg))
     fill_ins = [f for f in fill_ins if f["injured_id"] in rated]
@@ -135,7 +137,11 @@ def main():
            "replacement": repl, "lineup": lineup, "teams": teams,
            "data_through_week": int(cur.week.max()) if len(cur) else 0,
            "league": None, "league_error": league_error,
-           "injury_feeds": feed_status, "fill_ins": fill_ins}
+           "injury_feeds": feed_status, "fill_ins": fill_ins,
+           "qb_changes": sorted(({"team": r.team, "qb": r.qb, "was": r.qb_was, "factor": r.team_qb_factor,
+                                  "pass_ppg": r.qb_pass_ppg, "qb_id": r.player_id}
+                                 for r in df[df.qb_change & (df.position == "QB") & df.qb_starter].itertuples()),
+                                key=lambda x: x["factor"])}
 
     if league and league.my_team_id:
         adv = advisor.Advisor(df, league, weeks_left)

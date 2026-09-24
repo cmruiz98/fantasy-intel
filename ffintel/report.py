@@ -6,45 +6,84 @@ TEMPLATE = r"""<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>Fantasy Intel</title>
 <style>
-:root{--bg:#f6f7f9;--card:#fff;--ink:#16181d;--mute:#667085;--line:#e4e7ec;--acc:#2563eb;--good:#15803d;--goodbg:#dcfce7;--bad:#b91c1c;--badbg:#fee2e2;--warn:#a16207;--warnbg:#fef3c7;--chip:#eef2f7}
-@media (prefers-color-scheme:dark){:root{--bg:#0e1116;--card:#161b22;--ink:#e6edf3;--mute:#8b949e;--line:#262d36;--acc:#60a5fa;--good:#4ade80;--goodbg:#12301f;--bad:#f87171;--badbg:#3a1616;--warn:#fbbf24;--warnbg:#3a2e0d;--chip:#1f2630}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-header{padding:18px 16px 8px;max-width:1200px;margin:auto}h1{margin:0;font-size:22px}header p{margin:4px 0 0;color:var(--mute);font-size:13px}
-nav{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line)}
-nav div{display:flex;gap:4px;overflow-x:auto;max-width:1200px;margin:auto;padding:8px 16px}
-nav button{flex:none;border:0;background:none;color:var(--mute);padding:8px 12px;border-radius:8px;font:inherit;font-weight:600;cursor:pointer}
-nav button.on{background:var(--chip);color:var(--ink)}
-main{max-width:1200px;margin:auto;padding:12px 16px 60px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
-.card h2{margin:0 0 4px;font-size:16px}.sub{color:var(--mute);font-size:13px;margin:0 0 10px}
-.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
-table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
-th{color:var(--mute);font-weight:600;font-size:12px;cursor:pointer;user-select:none;position:sticky;top:0;background:var(--card)}
-th:first-child,td:first-child{text-align:left;position:sticky;left:0;background:var(--card)}td.l,th.l{text-align:left}
-tr.p{cursor:pointer}tr.p:hover td{background:var(--chip)}
-.pos{display:inline-block;min-width:26px;text-align:center;font-size:11px;font-weight:700;border-radius:5px;padding:1px 4px;background:var(--chip);color:var(--mute);margin-right:6px}
-.tag{display:inline-block;font-size:11px;font-weight:700;border-radius:999px;padding:2px 8px}
-.U{background:var(--goodbg);color:var(--good)}.O{background:var(--badbg);color:var(--bad)}.I{background:var(--warnbg);color:var(--warn)}.S{background:var(--chip);color:var(--acc)}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
-.stat{background:var(--chip);border-radius:10px;padding:10px}.stat b{display:block;font-size:20px}.stat span{color:var(--mute);font-size:12px}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
-input,select{font:inherit;padding:7px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
-.chips button{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:999px;padding:5px 12px;font:inherit;cursor:pointer}.chips button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
-.trade{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
-.trade:last-child{border:0}.trade .arrow{color:var(--mute);font-size:18px}.trade small{color:var(--mute)}
-.why{color:var(--mute);font-size:12px;white-space:normal;text-align:left;min-width:220px}
+:root{
+  color-scheme:light;
+  --bg:#f4f5f7; --card:#ffffff; --card-2:#fafbfc; --ink:#14161a; --ink-2:#3d434d; --mute:#69707c;
+  --line:#e4e7ec; --line-2:#eef0f4; --chip:#eef1f6;
+  --acc:#2a78d6; --acc-soft:#e8f0fb;
+  --good:#10714d; --good-bg:#e3f5ec; --bad:#b52d2a; --bad-bg:#fbe9e8; --warn:#8a6206; --warn-bg:#fdf0d9;
+  --shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.04);
+  --radius:14px;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  color-scheme:dark;
+  --bg:#0e1014; --card:#171a20; --card-2:#1c2028; --ink:#e9ecf1; --ink-2:#c2c8d2; --mute:#8d96a3;
+  --line:#242932; --line-2:#1f242c; --chip:#212733;
+  --acc:#5fa0ee; --acc-soft:#16283f;
+  --good:#3fc490; --good-bg:#10291f; --bad:#f08b88; --bad-bg:#2c1615; --warn:#e8b563; --warn-bg:#2e2410;
+  --shadow:none;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;-webkit-font-smoothing:antialiased}
+b,strong{font-weight:650}
+header{max-width:1180px;margin:auto;padding:22px 20px 10px}
+h1{margin:0;font-size:21px;font-weight:700;letter-spacing:-.02em;display:flex;align-items:center;gap:10px}
+h1::before{content:"";width:6px;height:22px;border-radius:3px;background:linear-gradient(180deg,var(--acc),#1baf7a)}
+header p{margin:6px 0 0;color:var(--mute);font-size:12.5px;letter-spacing:.01em}
+nav{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+nav div{display:flex;gap:2px;overflow-x:auto;max-width:1180px;margin:auto;padding:9px 20px;scrollbar-width:none}
+nav div::-webkit-scrollbar{display:none}
+nav button{flex:none;border:0;background:none;color:var(--mute);padding:7px 13px;border-radius:9px;font:inherit;font-size:13.5px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background .12s,color .12s}
+nav button:hover{color:var(--ink);background:var(--line-2)}
+nav button.on{background:var(--acc-soft);color:var(--acc)}
+main{max-width:1180px;margin:auto;padding:16px 20px 72px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin-bottom:16px;box-shadow:var(--shadow)}
+.card h2{margin:0 0 3px;font-size:15.5px;font-weight:650;letter-spacing:-.01em}
+.sub{color:var(--mute);font-size:13px;margin:0 0 12px;max-width:80ch}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -18px;padding:0 18px}
+table{border-collapse:separate;border-spacing:0;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line-2);text-align:right;white-space:nowrap}
+th{color:var(--mute);font-weight:600;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;user-select:none;position:sticky;top:0;background:var(--card);border-bottom:1px solid var(--line);z-index:2}
+th:hover{color:var(--ink)}
+th:first-child,td:first-child{text-align:left;position:sticky;left:0;background:var(--card);z-index:1}
+td.l,th.l{text-align:left}
+tbody tr:last-child td{border-bottom:0}
+tr.p{cursor:pointer}tr.p:hover td{background:var(--card-2)}
+.pos{display:inline-block;min-width:28px;text-align:center;font-size:10px;font-weight:700;letter-spacing:.04em;border-radius:5px;padding:2px 5px;background:var(--chip);color:var(--ink-2);margin-right:7px}
+.tag{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.02em;border-radius:999px;padding:2px 8px;vertical-align:middle}
+.U{background:var(--good-bg);color:var(--good)}.O{background:var(--bad-bg);color:var(--bad)}
+.I{background:var(--warn-bg);color:var(--warn)}.S{background:var(--acc-soft);color:var(--acc)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px}
+.stat{background:var(--card-2);border:1px solid var(--line-2);border-radius:11px;padding:11px 12px;position:relative;overflow:hidden}
+.stat::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--acc);opacity:.55}
+.stat b{display:block;font-size:21px;font-weight:680;letter-spacing:-.02em;line-height:1.25}
+.stat span{color:var(--mute);font-size:11.5px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+input,select{font:inherit;font-size:13.5px;padding:8px 11px;border-radius:9px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+input:focus,select:focus{outline:2px solid var(--acc-soft);border-color:var(--acc)}
+.chips button{border:1px solid var(--line);background:var(--card);color:var(--ink-2);border-radius:999px;padding:6px 13px;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+.chips button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+.trade{display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line-2)}
+.trade:last-child{border:0}.trade .arrow{color:var(--mute);font-size:17px}.trade small{color:var(--mute)}
+.why{color:var(--mute);font-size:12px;white-space:normal;text-align:left;min-width:220px;line-height:1.4}
 .good{color:var(--good)}.bad{color:var(--bad)}.mute{color:var(--mute)}
-.bars{display:flex;gap:3px;align-items:flex-end;height:60px}.bars div{flex:1;background:var(--acc);border-radius:3px 3px 0 0;min-width:10px;position:relative}
+.bars{display:flex;gap:4px;align-items:flex-end;height:64px;margin-top:6px}
+.bars div{flex:1;background:var(--acc);border-radius:4px 4px 2px 2px;min-width:10px;position:relative;opacity:.9}
 .bars div span{position:absolute;top:-16px;left:0;right:0;text-align:center;font-size:10px;color:var(--mute)}
-dialog{border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--ink);max-width:560px;width:calc(100% - 32px);padding:18px}
-dialog::backdrop{background:rgba(0,0,0,.5)}.x{float:right;border:0;background:none;color:var(--mute);font-size:22px;cursor:pointer}
-.kv{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;font-size:13px}.kv div{display:flex;justify-content:space-between;border-bottom:1px dashed var(--line);padding:3px 0}
-.banner{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:10px 12px;margin-bottom:14px;font-size:13px}
-.taList{max-height:340px;overflow:auto;margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:4px}
-.taRow{display:flex;gap:8px;align-items:center;padding:6px;border-radius:8px;font-size:13px;cursor:pointer;flex-wrap:wrap}
-.taRow:hover{background:var(--chip)}.taRow.on{background:var(--chip)}.taRow span:last-child{margin-left:auto;font-size:12px}
-@media(max-width:640px){.card>div[style*='1fr 1fr']{grid-template-columns:1fr!important}}
-.method p{margin:6px 0;max-width:760px}.method h3{margin:14px 0 4px;font-size:14px}
+dialog{border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--ink);max-width:580px;width:calc(100% - 28px);padding:20px;box-shadow:0 12px 40px rgba(16,24,40,.18)}
+dialog::backdrop{background:rgba(9,11,15,.55)}
+.x{float:right;border:0;background:none;color:var(--mute);font-size:22px;line-height:1;cursor:pointer;padding:0 2px}
+.kv{display:grid;grid-template-columns:1fr 1fr;gap:2px 18px;font-size:13px;font-variant-numeric:tabular-nums}
+.kv div{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid var(--line-2);padding:5px 0}
+.kv span{color:var(--mute)}
+.banner{background:var(--warn-bg);color:var(--warn);border-radius:11px;padding:11px 13px;margin-bottom:14px;font-size:13px;line-height:1.5}
+.taList{max-height:340px;overflow:auto;margin-top:8px;border:1px solid var(--line);border-radius:11px;padding:5px;background:var(--card-2)}
+.taRow{display:flex;gap:8px;align-items:center;padding:7px;border-radius:8px;font-size:13px;cursor:pointer;flex-wrap:wrap}
+.taRow:hover{background:var(--chip)}.taRow.on{background:var(--acc-soft)}
+.taRow span:last-child{margin-left:auto;font-size:11.5px;color:var(--mute);font-variant-numeric:tabular-nums}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:700px){.split{grid-template-columns:1fr}main{padding:14px 16px 60px}header{padding:18px 16px 8px}nav div{padding:8px 16px}.card{padding:14px}.tw{margin:0 -14px;padding:0 14px}}
+.method p{margin:7px 0;max-width:78ch;color:var(--ink-2)}.method h3{margin:16px 0 4px;font-size:13.5px;letter-spacing:-.01em}
 </style></head><body>
 <header><h1>Fantasy Intel</h1><p id="meta"></p></header>
 <nav><div id="tabs"></div></nav>
@@ -103,7 +142,7 @@ function detail(id){
    <div class="stat"><b>${p.position}${f0(p.own_pos_rank)} / ${p.consensus_pos_rank?p.position+f0(p.consensus_pos_rank):'–'}</b><span>Our rank / consensus</span></div>
   </div>
   ${p.role_factor!=null&&p.role_factor<0.95&&p.proj_ppg_raw>p.proj_ppg?`<p class="sub">Role ceiling: with his current workload he keeps ${pct(p.role_factor)} of the value above replacement, trimming ${f1(p.proj_ppg_raw)} to ${f1(p.proj_ppg)} per game.</p>`:''}
-  <p class="sub" style="margin-bottom:18px">How we got ${f1(p.proj_ppg_raw??p.proj_ppg)}: history says <b>${f1(p.prior_ppg)}</b> (${esc(p.prior_source)}, worth ${f1(p.prior_weight_games)} games), this season says <b>${f1(p.cur_ppg)}</b> actual / <b>${f1((p.xfp_total||0)/Math.max(p.all_games||1,1))}</b> expected from usage. This season gets ${pct(p.current_weight)} of the weight.</p>
+  <p class="sub" style="margin-bottom:18px">How we got ${f1(p.proj_ppg_raw??p.proj_ppg)}:${p.preseason_ppg?` draft day said <b>${f1(p.preseason_ppg)}</b> (worth ${f1(p.preseason_weight_games)} games and fading),`:''} history says <b>${f1(p.prior_ppg)}</b> (${esc(p.prior_source)}, worth ${f1(p.prior_weight_games)} games), this season says <b>${f1(p.cur_ppg)}</b> actual / <b>${f1((p.xfp_total||0)/Math.max(p.all_games||1,1))}</b> expected from usage. This season gets ${pct(p.current_weight)} of the weight.</p>
   ${w.length?`<div class="bars">${w.map(v=>`<div style="height:${Math.max(3,v/mx*100)}%"><span>${v}</span></div>`).join('')}</div><p class="sub">Points by week</p>`:''}
   <div class="kv">
    <div><span>Snap % (season / role now)</span><b>${pct(p.snap_pct)} / ${pct(p.role_share)}</b></div><div><span>Target share</span><b>${pct(p.target_share)}</b></div>
@@ -114,6 +153,7 @@ function detail(id){
    <div><span>RZ carries / inside 10</span><b>${f0(p.rz_carries)} / ${f0(p.i10_carries)}</b></div><div><span>End-zone targets</span><b>${f0(p.ez_targets)}</b></div>
    <div><span>TDs</span><b>${f0(p.tds)}</b></div><div><span>Expected pts (total)</span><b>${f1(p.xfp_total)}</b></div>
    ${p.position==='QB'?`<div><span>Pass yds / TD / INT</span><b>${f0(p.pass_yds)} / ${f0(p.pass_tds)} / ${f0(p.ints)}</b></div>`:''}
+   <div><span>Quarterback</span><b>${esc(p.qb||'—')} ${p.qb_factor&&Math.abs(p.qb_factor-1)>=0.01?`<span class="${p.qb_factor<1?'bad':'good'}">${sgn((p.qb_factor-1)*100)}%</span>`:''}</b></div>
    <div><span>Next opp. / matchup</span><b>${p.on_bye?'BYE':esc(p.opponent||'—')} ${p.matchup?'×'+(+p.matchup).toFixed(2):''}</b></div>
    <div><span>FantasyPros ROS rank</span><b>${p.fp_ros?f1(p.fp_ros):'–'} <span class="mute">(${p.fp_ros_best??'–'}–${p.fp_ros_worst??'–'})</span></b></div>
    <div><span>ESPN ROS proj.</span><b>${f0(p.espn_proj)}</b></div>
@@ -168,6 +208,7 @@ const views={
   <p class="sub" style="margin-top:8px">Tap any player for details. <a href="rankings.csv" style="color:var(--acc)">Download CSV</a></p></div>`;
  },
  injuries(){
+  const qbc=(D.qb_changes||[]).filter(q=>Math.abs(q.factor-1)>=0.01);
   const rel=p=>p.own_pos_rank<=60||p.owner_name||p.fill_in_for;
   const game=P.filter(p=>['LEFT GAME','RETURNED','SNAPS DOWN'].includes(p.inj_status)&&rel(p)).sort((a,b)=>(b.exp_missed||0)-(a.exp_missed||0)||b.ros_value-a.ros_value);
   const all=P.filter(p=>p.inj_status&&rel(p)).sort((a,b)=>b.ros_value-a.ros_value);
@@ -177,6 +218,8 @@ const views={
   return `<div class="card"><h2>Hurt in the last game</h2><p class="sub">Read straight from play-by-play within hours of each game, days before the official injury report. "Left game" means he never came back; how serious it is shows up once ESPN, Sleeper or the practice report weigh in.</p>${table(game,cols,{})}</div>
   ${fills?`<div class="card"><h2>Who stepped in</h2><p class="sub">The teammate who took the injured player's work for the rest of the game. Often the week's best waiver add.</p>${fills}</div>`:''}
   <div class="card"><h2>Every injury status</h2><p class="sub">The most serious current signal wins; tap a player to see every source. Stale info is dropped automatically (e.g. last week's "Questionable" once he's played, or an in-game injury once the next official report is out).</p>${table(all,[...cols.slice(0,1),{k:'inj_status',h:'Status',l:1,f:x=>inj(x)},...cols.slice(1)],{})}</div>
+  ${qbc.length?`<div class="card"><h2>Quarterback changes</h2><p class="sub">When a starting QB goes down, his pass catchers lose value too. The backup is rated on his own history, and everyone who catches passes from him is adjusted by the gap.</p>
+  ${qbc.map(q=>`<div style="padding:6px 0;border-bottom:1px dashed var(--line)"><b>${esc(q.team)}</b>: ${esc(q.qb)} in for ${esc(q.was)} <span class="mute">(${f1(q.pass_ppg)} passing pts/start)</span> · <b class="${q.factor<1?'bad':'good'}">${sgn((q.factor-1)*100)}%</b> <span class="mute">for his receivers</span></div>`).join('')}</div>`:''}
   <div class="card"><h2>Sources this update</h2><p>${feeds}</p></div>`;
  },
  analyzer(){
@@ -185,24 +228,35 @@ const views={
   if(TA.a==null){TA.a=L.team.team_id;TA.b=(teams.find(t=>t.team_id!==TA.a)||{}).team_id}
   setTimeout(taRender);
   return `<div class="card"><h2>Trade analyzer</h2><p class="sub">Pick the players on each side. Every number is rest-of-season starting-lineup points using this app's projections, with injuries, byes and roster fit included.</p>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+  <div class="split">
     <div><select id="taA" style="width:100%"></select><div id="taAr" class="taList"></div></div>
     <div><select id="taB" style="width:100%"></select><div id="taBr" class="taList"></div></div>
   </div></div>
   <div class="card"><h2>Verdict</h2><div id="taOut"></div>
   <p class="sub" style="margin-top:10px"><a style="color:var(--acc);cursor:pointer" onclick="TA.give.clear();TA.get.clear();taRender()">Clear selections</a></p></div>`;
  },
+ teams(){
+  if(!L)return noLeague();
+  const list=L.team.strength;
+  if(TV.id==null)TV.id=L.team.team_id;
+  setTimeout(tvRender);
+  return `<div class="card"><div class="row"><select id="tvSel">${list.map(t=>`<option value="${t.team_id}">${esc(t.name)}</option>`).join('')}</select>
+  <span class="mute" style="font-size:13px">Any team in the league, in full.</span></div><div id="tvBody"></div></div>`;
+ },
  method(){
   return `<div class="card method"><h2>How the ratings work</h2>
   <h3>1. History (the prior)</h3><p>Each player's last three seasons, weighted 50/33/17 toward the most recent, counting only games where he played at least 20% of snaps. Rookies start from how past rookies at the same position and draft round scored. Age curves trim older RBs and WRs slightly.</p>
-  <h3>2. This season</h3><p>Actual points blended 50/50 with <b>expected points (xFP)</b>: every target and carry is valued by how many fantasy points the league average gets from that exact opportunity (depth of target, field position, red zone). Workload is far more stable than touchdowns, so xFP tells us whether a hot or cold start is real. Games a player sat while healthy count as zeros.</p>
-  <h3>3. Blending (why one bad week doesn't sink a star)</h3><p>History counts as a number of "phantom games" (roughly 2 to 6 depending on position and how much track record there is). After two weeks, this season is only about 25-35% of a proven player's projection; by mid-season it's the majority. If snap share has clearly changed (±15 points), history is trusted half as much, because a real role change should move fast. Tested on the 2025 season, this blend predicted rest-of-season scoring better than history alone, this season alone, or usage alone, at weeks 2, 4 and 8.</p>
-  <h3>4. Role ceiling (what stops empty recommendations)</h3><p>Fantasy points come from touches and targets, not reputation. Every game a player was active for counts toward his average, including a 5% snap cameo, because that IS the evidence he has no role. On top of that, his value above replacement is scaled by the job he currently holds: snap share in his last two games, or touches and targets per game against what a starter at his position gets, whichever is kinder. A former starter now playing 10% of snaps keeps about a tenth of his edge; a committee back with 20 carries on few snaps keeps all of it. Waiver suggestions also have to clear a floor: real recent usage, a role that is growing, or a job just inherited from an injured starter.</p>
-  <h3>5. Injuries</h3><p>Eight sources, fastest first: play-by-play (who got hurt and whether he came back, within hours of the game), snap counts, ESPN's injury desk (status, return date, news comment), Sleeper, ESPN news headlines, your league's ESPN designations, the official injury and practice reports, and NFL roster moves. News text is read for timelines ("2-4 weeks", "season-ending", "week-to-week", "high-ankle sprain", "surgery") and negations ("avoided a torn ACL"). The most serious current signal sets the status; a newer "full practice" or "cleared" overrides older short-term worries. Games a player left injured are left out of his scoring average.</p>
-  <h3>6. Rest of season</h3><p>Projected points per game × games left, minus byes and expected missed games from injuries (IR ≈ 4 games, Out 1, Doubtful 0.8, Questionable 0.25, left game injured 1 with a 50% chance to miss next week, or the injury desk's return date and timeline when there is one). Next week's projection also adjusts for the opponent's points allowed to that position (shrunk toward average, capped at ±15%).</p>
-  <h3>7. Market vs. us</h3><p>The consensus rating is a weighted average of FantasyPros rest-of-season consensus (60%, itself 100+ experts), ESPN's projections (25%) and FantasyPros weekly consensus (15%). Each consensus rank is turned into points using our own projection curve, so the gap is in real points. "Undervalued/Overvalued" needs a gap of at least 1.5 points per game and a meaningful rank difference. <b>Star guardrail:</b> a proven star can't be called overvalued unless something structural changed (injury, lost snaps, new team).</p>
-  <h3>8. Trade analyzer</h3><p>Pick any two teams and any set of players. For each side it rebuilds that team's best starting lineup before and after the trade, so a player only counts for what he adds to the lineup you would actually field: a third good running back is worth much less than a first one. It adds a small credit for bench depth, notes which lineup slots move, and counts roster spots gained or lost in an uneven package. Then it re-runs the whole calculation using consensus ranks instead of ours, which approximates how the other manager sees the deal, and that gap is what tells you whether an offer is likely to be accepted.</p>
-  <h3>9. Your league</h3><p>Value over replacement uses your league's real size and lineup slots. Waiver scores measure how much a player improves your best lineup. Trade ideas must improve your lineup by our numbers while being fair or better for the other team by consensus value, so they're offers that can actually get accepted.</p>
+  <h3>2. This season</h3><p>Actual points blended 50/50 with <b>expected points (xFP)</b>: every target and carry is valued by how many fantasy points the league average gets from that exact opportunity (depth of target, field position, red zone). Workload is far more stable than touchdowns, so xFP tells us whether a hot or cold start is real. Recent games count more: each week back is worth 80% of the one after it, so a player trending up or down moves quickly rather than being averaged flat. Games a player sat while healthy count as zeros.</p>
+  <p>This season's share of a projection grows automatically every week: it is the number of games played against the weight on history and draft day. For a typical player that is roughly 20-30% after two games, about half by week 6, and most of the projection by week 10.</p>
+  <h3>3. Draft day</h3><p>Where a player went in your league's draft is what the market thought of him in August, and that view carries information the box scores cannot show yet. His pick is mapped onto our own points curve at his position, so "the fifth tight end off the board" becomes the points per game of our fifth-best tight end. It counts as about 4 games of evidence in week 1 and fades to nothing by week 8, so it steadies early-season projections without overriding what actually happens on the field. Undrafted players and later pickups fall back to ESPN's preseason ranking.</p>
+  <h3>4. Blending (why one bad week doesn't sink a star)</h3><p>History counts as a number of "phantom games" (roughly 2 to 6 depending on position and how much track record there is; one full recent season counts as a complete record). After two weeks, this season is only about 25-35% of a proven player's projection; by mid-season it's the majority. If he has <b>lost</b> snaps (down 15+ points), history is trusted half as much, because a real role change should move fast. If he has <b>gained</b> snaps, history keeps its weight and the prior is nudged up instead, since his old numbers came from a smaller job and understate him. Tested on the 2025 season, this blend predicted rest-of-season scoring better than history alone, this season alone, or usage alone, at weeks 2, 4 and 8.</p>
+  <h3>5. Role ceiling (what stops empty recommendations)</h3><p>Fantasy points come from touches and targets, not reputation. Every game a player was active for counts toward his average, including a 5% snap cameo, because that IS the evidence he has no role. On top of that, his value above replacement is scaled by the job he currently holds: snap share in his last two games, or touches and targets per game against what a starter at his position gets, whichever is kinder. A former starter now playing 10% of snaps keeps about a tenth of his edge; a committee back with 20 carries on few snaps keeps all of it. Waiver suggestions also have to clear a floor: real recent usage, a role that is growing, or a job just inherited from an injured starter.</p>
+  <h3>6. Injuries</h3><p>Eight sources, fastest first: play-by-play (who got hurt and whether he came back, within hours of the game), snap counts, ESPN's injury desk (status, return date, news comment), Sleeper, ESPN news headlines, your league's ESPN designations, the official injury and practice reports, and NFL roster moves. News text is read for timelines ("2-4 weeks", "season-ending", "week-to-week", "high-ankle sprain", "surgery") and negations ("avoided a torn ACL"). The most serious current signal sets the status; a newer "full practice" or "cleared" overrides older short-term worries. Games a player left injured are left out of his scoring average.</p>
+  <h3>7. Rest of season</h3><p>Projected points per game × games left, minus byes and expected missed games from injuries (IR ≈ 4 games, Out 1, Doubtful 0.8, Questionable 0.25, left game injured 1 with a 50% chance to miss next week, or the injury desk's return date and timeline when there is one). Next week's projection also adjusts for the opponent's points allowed to that position (shrunk toward average, capped at ±15%).</p>
+  <h3>8. Market vs. us</h3><p>The consensus rating is a weighted average of FantasyPros rest-of-season consensus (60%, itself 100+ experts), ESPN's projections (25%) and FantasyPros weekly consensus (15%). Each consensus rank is turned into points using our own projection curve, so the gap is in real points. "Undervalued/Overvalued" needs a gap of at least 1.5 points per game and a meaningful rank difference. <b>Star guardrail:</b> a proven star can't be called overvalued unless something structural changed (injury, lost snaps, new team).</p>
+  <h3>9. Who is throwing the ball</h3><p>Every team's likely starting quarterback is identified from this season's attempts and the injury signals. He is graded on passing points per start only (his own rushing does nothing for his receivers), blending his history with this season. If the starter is only expected to miss a game or two, the backup counts for just that share of the remaining season. His receivers, tight ends and pass-catching backs are then adjusted by how far the weighted quarterback sits from the league average, shrunk by half and capped at ±12% (a tight end takes 90% of the adjustment, a running back 35%). A backup who inherits the job stops being judged by his old bench role, so his own projection reflects starting.</p>
+  <h3>10. Trade analyzer</h3><p>Pick any two teams and any set of players. For each side it rebuilds that team's best starting lineup before and after the trade, so a player only counts for what he adds to the lineup you would actually field: a third good running back is worth much less than a first one. It adds a small credit for bench depth, notes which lineup slots move, and counts roster spots gained or lost in an uneven package. Then it re-runs the whole calculation using consensus ranks instead of ours, which approximates how the other manager sees the deal, and that gap is what tells you whether an offer is likely to be accepted.</p>
+  <h3>11. Your league</h3><p>Value over replacement uses your league's real size and lineup slots. Waiver scores measure how much a player improves your best lineup. Trade ideas must improve your lineup by our numbers while being fair or better for the other team by consensus value, so they're offers that can actually get accepted.</p>
   <p class="mute">Replacement level (pts/game): ${Object.entries(D.replacement).map(([k,v])=>k+' '+f1(v)).join(' · ')} · Reception points: ${D.rec_pts}</p></div>`;
  }
 };
@@ -221,6 +275,49 @@ function drawRank(){
 }
 document.addEventListener('click',e=>{const b=e.target.closest('#pf button');if(b){document.querySelectorAll('#pf button').forEach(x=>x.classList.remove('on'));b.classList.add('on');drawRank()}});
 document.addEventListener('input',e=>{if(['q','grp','fa'].includes(e.target.id))drawRank()});
+
+// ---------------------------------------------------------------- team browser
+let TV={id:null};
+function tvRender(){
+  const box=document.getElementById('tvBody'); if(!box)return;
+  const sel=document.getElementById('tvSel'); if(sel)sel.value=TV.id;
+  const info=(L.team.strength||[]).find(t=>t.team_id===TV.id)||{};
+  const roster=rosterOf(TV.id);
+  if(!roster.length){box.innerHTML='<p class="mute">No rated players on this roster.</p>';return}
+  const wk=lineup(roster,p=>p.week_proj||0), ros=lineup(roster,ppw);
+  const mine=TV.id===L.team.team_id;
+  const strengths=['QB','RB','WR','TE'].map(ps=>{
+    const v=info[ps+'_ppw']||0, avg=(L.team.strength.reduce((t,x)=>t+(x[ps+'_ppw']||0),0)/L.team.strength.length);
+    const rank=L.team.strength.filter(x=>(x[ps+'_ppw']||0)>v).length+1;
+    return `<div class="stat"><span>${ps} · ${ord(rank)} of ${L.team.strength.length}</span><b>${f1(v)}</b><span>vs league avg ${f1(avg)} pts/wk</span></div>`}).join('');
+  const starters=[...ros.used];
+  const hurt=roster.filter(p=>p.inj_status&&!['CLEARED','RETURNED'].includes(p.inj_status)).sort((a,b)=>(b.exp_missed||0)-(a.exp_missed||0));
+  const under=roster.filter(p=>p.verdict==='Undervalued').sort((a,b)=>b.gap_ppg-a.gap_ppg);
+  const over=roster.filter(p=>p.verdict==='Overvalued').sort((a,b)=>a.gap_ppg-b.gap_ppg);
+  const cols=[{k:'name',h:'Player',l:1,f:nm},
+    {k:'role',h:'Role',f:x=>starters.includes(x.player_id)?'<span class="tag S">Starter</span>':'<span class="mute">bench</span>'},
+    {k:'proj_ppg',h:'Proj',f:x=>f1(x.proj_ppg)},{k:'week_proj',h:'Next wk',f:x=>wk2(x)},
+    {k:'ros_points',h:'ROS',f:x=>f0(x.ros_points)},{k:'role_share',h:'Snaps',f:x=>pct(x.role_share)},
+    {k:'own_pos_rank',h:'Us / market',f:x=>`${x.position}${f0(x.own_pos_rank)} / ${x.consensus_pos_rank?x.position+f0(x.consensus_pos_rank):'–'}`},
+    {k:'verdict',h:'',f:x=>verdict(x.verdict)}];
+  box.innerHTML=`<div class="grid" style="margin:4px 0 14px">
+      <div class="stat"><span>Power rank</span><b>${info.power_rank||'–'} of ${L.team.strength.length}</b><span>${esc(info.record||'')} · ${f1(info.lineup_ppw)} pts/wk</span></div>
+      <div class="stat"><span>Best lineup, week ${D.plan_week}</span><b>${f1(wk.total)}</b><span>points projected</span></div>
+      <div class="stat"><span>Rest of season</span><b>${f0(ros.total*WKS)}</b><span>starting-lineup points</span></div>
+      ${hurt.length?`<div class="stat"><span>Injury concerns</span><b>${hurt.length}</b><span>${esc(hurt.slice(0,2).map(p=>p.name).join(', '))}</span></div>`:''}
+    </div>
+    <div class="grid" style="margin-bottom:14px">${strengths}</div>
+    ${table(roster.slice().sort((a,b)=>ppw(b)-ppw(a)),cols,{})}
+    <div class="split" style="margin-top:16px">
+      <div><p class="sub"><b>${mine?'Your':'Their'} players we rate above the market</b> ${mine?'(hold, or sell only at a premium)':'(buy-low targets)'}</p>
+        ${under.length?under.map(p=>`<div class="p" onclick="detail('${p.player_id}')">${nm(p)} <span class="mute">${p.position}${f0(p.own_pos_rank)} us / ${p.position}${f0(p.consensus_pos_rank)} market · <span class="good">${sgn(p.gap_ppg)}/g</span></span></div>`).join(''):'<p class="mute">None.</p>'}</div>
+      <div><p class="sub"><b>${mine?'Your':'Their'} players the market likes more than we do</b> ${mine?'(sell-high candidates)':'(what they may overrate)'}</p>
+        ${over.length?over.map(p=>`<div class="p" onclick="detail('${p.player_id}')">${nm(p)} <span class="mute">${p.position}${f0(p.own_pos_rank)} us / ${p.position}${f0(p.consensus_pos_rank)} market · <span class="bad">${sgn(p.gap_ppg)}/g</span></span></div>`).join(''):'<p class="mute">None.</p>'}</div>
+    </div>
+    ${mine?'':`<p class="sub" style="margin-top:14px"><a style="color:var(--acc);cursor:pointer" onclick="TA.a=L.team.team_id;TA.b=${TV.id};TA.give.clear();TA.get.clear();go('analyzer')">Build a trade with ${esc(info.name||'this team')} →</a></p>`}`;
+}
+const wk2=p=>p.on_bye?'<span class="mute">bye</span>':f1(p.week_proj);
+document.addEventListener('change',e=>{if(e.target.id==='tvSel'){TV.id=+e.target.value;tvRender()}});
 
 // ---------------------------------------------------------------- trade analyzer
 const SLOTS=['QB','RB','WR','TE','FLEX','OP'];
@@ -293,7 +390,7 @@ function taVerdict(){  // selections changed: leave the lists alone so nothing j
   const plist=(ps,who)=>ps.map(p=>`<div class="p" onclick="detail('${p.player_id}')">${nm(p)} <span class="mute">${f1(ppw(p))}/wk · ${f0(p.ros_points)} ROS · ${p.position}${f0(p.own_pos_rank)} us / ${p.consensus_pos_rank?p.position+f0(p.consensus_pos_rank):'–'} market${(p.exp_missed||0)>=1?' · out ~'+f1(p.exp_missed)+' games':''}</span></div>`).join('');
   box.innerHTML=`<div class="banner" style="background:${cls==='good'?'var(--goodbg)':cls==='bad'?'var(--badbg)':'var(--warnbg)'};color:${cls==='good'?'var(--good)':cls==='bad'?'var(--bad)':'var(--warn)'}"><b>${title}</b><br>${line}</div>
    <div class="grid">${side(nameOf(TA.a)+' (you)',you)}${side(nameOf(TA.b),them)}</div>
-   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px">
+   <div class="split" style="margin-top:14px">
      <div><p class="sub"><b>Out:</b></p>${plist(give)}</div><div><p class="sub"><b>In:</b></p>${plist(get)}</div></div>
    <p class="sub" style="margin-top:12px">Points are rest-of-season starting-lineup points, already adjusted for injuries and byes. "By consensus" re-runs the same calculation using FantasyPros and ESPN ranks instead of ours, which is roughly how the other manager sees it.</p>`;
 }
@@ -302,7 +399,7 @@ document.addEventListener('change',e=>{
   else if(e.target.dataset&&e.target.dataset.side){const k=e.target.dataset.side,set=TA[k];e.target.checked?set.add(e.target.value):set.delete(e.target.value);taVerdict()}
 });
 
-const TABS=[['team','My team'],['waivers','Waivers'],['trades','Trades'],['analyzer','Trade analyzer'],['value','Value board'],['rankings','Rankings'],['injuries','Injuries'],['method','How it works']];
+const TABS=[['team','My team'],['waivers','Waivers'],['trades','Trades'],['analyzer','Trade analyzer'],['teams','Teams'],['value','Value board'],['rankings','Rankings'],['injuries','Injuries'],['method','How it works']];
 function go(k){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.k===k));$('#main').innerHTML=views[k]();try{localStorage.setItem('tab',k)}catch(e){}}
 $('#tabs').innerHTML=TABS.map(([k,h])=>`<button data-k="${k}">${h}</button>`).join('');
 document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>go(b.dataset.k));
