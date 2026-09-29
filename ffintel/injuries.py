@@ -79,6 +79,9 @@ class Signal:
     positive: bool = False  # e.g. "full practice", "will play"
     p_miss: float | None = None  # chance he misses the next game (default: min(games, 1))
     mild: bool = False            # e.g. "minor sprain", "hoping to play": likely plays
+    designated: bool = True       # carries a real status (feed, report, roster) or in-game evidence
+    absence: bool = False         # text says outright that he will miss time
+    timeline: bool = False        # explicit return date or "out X weeks": definitive, not a stale status
 
 
 # ---------------------------------------------------------------- text reading
@@ -94,6 +97,15 @@ MILD = re.compile(r"\b(minor|hop(?:es|eful|ing) to play|expects? to play|expecte
                   r"avoided (?:a )?(?:serious|major|significant|long[- ]term)|no structural damage|precaution(?:ary)?|"
                   r"good chance (?:to|of) play|on track to play|trending toward playing|likely to play|"
                   r"nothing serious|isn't serious|not serious|won't miss|will not miss)\b", re.I)
+ABSENCE = re.compile(r"\b(will miss|expected to miss|set to miss|could miss|likely to miss|ruled out|won't play|will not play|"
+                     r"sidelined|shelved|placed [\w.' -]{0,30}?on (?:injured reserve|ir)|(?:landed|moved|headed) (?:on|to) (?:injured reserve|ir)|"
+                     r"season[- ]ending|out for the (?:season|year)|out (?:for )?(?:\d+|one|two|three|four|five|six|several|multiple) weeks|"
+                     r"week[- ]to[- ]week|undergo(?:ing)? surgery|will have surgery|(?:suffered|sustained) a (?:torn|fractured|broken))\b", re.I)
+# a timeline number only counts when the clause is about missing time
+TIMELINE_CTX = re.compile(r"(miss|out\b|sidelined|shelved|recover|return|rehab|timeline|week[- ]to[- ]week|"
+                          r"expected to be|could be|will be|placed|injur|sprain|strain|tear|surgery)", re.I)
+HISTORY_CTX = re.compile(r"(offseason|last (?:year|season)|previous(?:ly)?|in the past|recovered from|returned from|"
+                         r"back from|fully healed|a year ago|college)", re.I)
 NAME_RE = re.compile(r"\b[A-Z][a-z]+(?:['\-][A-Za-z]+)?\s+[A-Z][a-zA-Z.'\-]+\b")
 
 
@@ -131,10 +143,17 @@ def text_severity(text: str) -> tuple[float, str] | None:
     t = text.lower()
     best = None
 
-    def take(g, label, m):
+    def clause(m):
+        return re.split(r"[.;!?]", t[max(0, m.start() - 70):m.start()])[-1]
+
+    def take(g, label, m, need_ctx=False):
         nonlocal best
         if m is not None and _neg(t, m.start()):
             return
+        if m is not None and HISTORY_CTX.search(clause(m)):
+            return  # "had offseason surgery", "returned from a torn ACL last year"
+        if need_ctx and m is not None and not TIMELINE_CTX.search(clause(m) + t[m.end():m.end() + 25]):
+            return  # "over the past two weeks" is a stat line, not a timeline
         if best is None or g > best[0]:
             best = (g, label)
 
@@ -143,22 +162,23 @@ def text_severity(text: str) -> tuple[float, str] | None:
         m = re.search(pat, t)
         if m:
             take(99.0, "season-ending", m)
-    m = re.search(r"(?:placed|landed|moved|headed) (?:him )?(?:on|to) (?:injured reserve|ir)\b|\bon injured reserve\b", t)
+    m = re.search(r"placed [\w.' -]{0,30}?on (?:injured reserve|ir)\b|(?:landed|moved|headed) (?:on|to) (?:injured reserve|ir)\b|\bon injured reserve\b", t)
     if m:
         take(4.0, "injured reserve", m)
     spans = []
     for m in re.finditer(r"(\d+|one|two|three|four|five|six|seven|eight)\s*(?:-|to|or)\s*(\d+|two|three|four|five|six|seven|eight|ten|twelve)\s*weeks", t):
         a, b = (int(WORDNUM.get(x, x)) for x in m.groups())
         spans.append(m.span())
-        take((a + b) / 2, f"{m.group(0)}", m)
+        take((a + b) / 2, f"{m.group(0)}", m, need_ctx=True)
     for m in re.finditer(r"\b(\d+|one|two|three|four|five|six|a couple|couple|a few|few|several|multiple)\s+(?:more\s+)?weeks", t):
         if any(a <= m.start() < b for a, b in spans):
             continue  # part of a range already counted
         w = m.group(1)
         n = int(w) if w.isdigit() else WORDNUM.get(w, 2)
-        take(float(n), m.group(0), m)
+        take(float(n), m.group(0), m, need_ctx=True)
     for pat, g, label in ((r"week[- ]to[- ]week", 2.0, "week-to-week"), (r"high[- ]ankle", 2.5, "high-ankle sprain"),
-                          (r"\bsurgery\b", 4.0, "surgery"), (r"\bfracture|\bbroken\b", 4.0, "fracture"),
+                          (r"\bsurgery\b", 4.0, "surgery"),
+                          (r"\bfractured?\b|\bbroken (?:leg|arm|hand|foot|ankle|collarbone|clavicle|rib|ribs|finger|thumb|wrist|bone|fibula|tibia|fibula|toe|jaw|nose|back)\b", 4.0, "fracture"),
                           (r"concussion", 1.0, "concussion protocol"), (r"ruled out|will not play|won't play|will miss", 1.0, "ruled out"),
                           (r"(?:undergo|undergoing|will have|scheduled for|awaiting|set for|pending)(?: an?)? mri|mri (?:is )?(?:scheduled|pending)", 0.5, "awaiting MRI"), (r"\bdoubtful\b", 0.8, "doubtful"),
                           (r"day[- ]to[- ]day|game[- ]time decision|\bquestionable\b", 0.3, "day-to-day"),
@@ -421,24 +441,36 @@ def espn_feed(espn_idmap: dict, nidx: dict, game_dates: dict) -> list[Signal]:
             pid = pid or nidx.get((_norm(ath.get("displayName", "")), tabbr)) or nidx.get((_norm(ath.get("displayName", "")), None))
             if not pid:
                 continue
+            raw_status = str(it.get("status") or (it.get("type") or {}).get("description") or "").strip().lower()
             status = _status(it.get("status")) or _status((it.get("type") or {}).get("description"))
+            if raw_status == "active":
+                # ESPN lists healthy players too; "Active" is a clean bill of health
+                pos_active = True
+                status = None
+            else:
+                pos_active = False
             details = it.get("details") or {}
             body = " ".join(str(details.get(k, "")) for k in ("side", "type", "detail") if details.get(k)).strip()
             comment = it.get("longComment") or it.get("shortComment") or ""
             mine = about_player(comment, ath.get("displayName", ""))
             games = BASE_GAMES.get(status, 0.0) if status else 0.0
             sev = text_severity(mine)  # only what the blurb says about HIM
-            if sev and not status:
-                sev = (min(sev[0], 2.0), sev[1])  # no designation: don't over-read a write-up
+            absence = bool(ABSENCE.search(mine))
+            if not status and not absence:
+                sev = None  # a write-up with no designation is commentary, not an injury
+            elif sev and not status:
+                sev = (min(sev[0], 2.0), sev[1])
             if sev and sev[0] > games:
                 games = sev[0]
             label = status or ("SEASON" if games >= 99 else "OUT" if games >= 1 else
                                "QUESTIONABLE" if games >= 0.3 else "NEWS")
-            if details.get("returnDate"):
+            timeline = bool(sev and sev[0] >= 1 and absence)
+            if details.get("returnDate") and status:
                 g = _games_from_return(details["returnDate"], tabbr, game_dates)
-                if g is not None and status in ("OUT", "IR", "PUP", "SUSPENSION", None, "SEASON"):
-                    games = max(g, games if label == "SEASON" else 0)
-            positive = bool(POSITIVE.search(mine or comment))
+                if g is not None and status in ("OUT", "IR", "PUP", "SUSPENSION", "SEASON") and g >= 1:
+                    games = max(g, games)  # never let a return date shrink a stated timeline
+                    timeline = True
+            positive = bool(POSITIVE.search(mine or comment)) or (pos_active and not absence)
             mild = bool(MILD.search(mine)) and not positive
             if positive and not status:
                 games, label = 0.0, "NEWS"  # the write-up says he is fine
@@ -451,7 +483,8 @@ def espn_feed(espn_idmap: dict, nidx: dict, game_dates: dict) -> list[Signal]:
             if details.get("returnDate"):
                 detail += f" (ESPN return estimate: {details['returnDate'][:10]})"
             out.append(Signal(pid, label, games, detail, "ESPN injury desk", it.get("date", ""),
-                              positive=positive, mild=mild))
+                              positive=positive, mild=mild, designated=bool(status) or pos_active, absence=absence,
+                              timeline=timeline and not positive and not mild))
     return out
 
 
@@ -478,12 +511,13 @@ def sleeper_feed(ids: pd.DataFrame, nidx: dict) -> list[Signal]:
         if sev and sev[0] > games:
             games = sev[0]
         mild = bool(MILD.search(notes)) and games < 1.5
+        timeline = bool(sev and sev[0] >= 1 and ABSENCE.search(notes)) and not mild
         upd = p.get("news_updated")
         when = dt.datetime.fromtimestamp(upd / 1000, dt.timezone.utc).isoformat() if upd else ""
         body = p.get("injury_body_part") or ""
         out.append(Signal(pid, "SEASON" if games >= 99 else status, games,
                           f"{body}{': ' if body and notes else ''}{notes}".strip() or status.title(),
-                          "Sleeper", when, mild=mild))
+                          "Sleeper", when, mild=mild, timeline=timeline))
     return out
 
 
@@ -517,7 +551,9 @@ def news_feed(espn_idmap: dict, nidx: dict) -> list[Signal]:
                 games = min(games, 0.3) if games else 0.25
             label = "SEASON" if games >= 99 else ("NEWS" if games < 0.3 else ("OUT" if games >= 1 else "QUESTIONABLE"))
             out.append(Signal(pid, label, games, a.get("headline", "")[:200], "ESPN news", pub,
-                              positive=pos and not sev, mild=mild))
+                              positive=pos and not sev, mild=mild, designated=False,
+                              absence=bool(ABSENCE.search(text)),
+                              timeline=bool(ABSENCE.search(text)) and games >= 1 and not mild))
     return out
 
 
@@ -578,7 +614,9 @@ def rss_feed(names: dict) -> list[Signal]:
                 status = "SEASON" if games >= 99 else ("NEWS" if games < 0.3 else
                                                       ("OUT" if games >= 1 else "QUESTIONABLE"))
                 out.append(Signal(pid, status, games, title[:200], f"{label} news", when,
-                                  positive=pos and not sev, mild=mild))
+                                  positive=pos and not sev, mild=mild, designated=False,
+                                  absence=bool(ABSENCE.search(text)),
+                                  timeline=bool(ABSENCE.search(text)) and games >= 1 and not mild))
     if errors and not out:
         raise RuntimeError("; ".join(errors))
     return out
@@ -649,6 +687,12 @@ def combine(signals: list[Signal], report_weeks: dict, player_team: dict, last_p
             live.append(s)
         if not live:
             continue
+        # Nobody gets marked injured on commentary alone: there must be a real designation
+        # (ESPN, Sleeper, official report, your league, roster move) or in-game evidence,
+        # or text that says outright he will miss time.
+        live = [s for s in live if s.designated or s.absence or s.positive or s.mild]
+        if not any(s.designated or s.absence for s in live if s.games > 0):
+            continue
 
         report_filed = plan_week is not None and practice_weeks.get(team, 0) >= plan_week
         this_week = [s for s in live if s.source in OFFICIAL and s.week == plan_week]
@@ -656,7 +700,8 @@ def combine(signals: list[Signal], report_weeks: dict, player_team: dict, last_p
                          and (plan_week is None or s.week < plan_week) and s.games > 0]
         good = [s for s in live if (s.positive or s.mild) and _ts(s.when) is not None]
         newest_good = max(good, key=lambda s: _ts(s.when)) if good else None
-        long = [s for s in live if (s.games >= 1.5 or s.status in LONG_STATUSES) and not s.mild]
+        long = [s for s in live if (s.games >= 1.5 or s.status in LONG_STATUSES or (s.timeline and s.games >= 1))
+                and not s.mild]
         short = [s for s in live if s not in long and s.source not in OFFICIAL
                  and s.status in GAME_STATUSES and s.games > 0]
 

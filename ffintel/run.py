@@ -48,7 +48,7 @@ PLAYER_COLS = ["player_id", "name", "position", "team", "age", "headshot", "game
                "qb", "qb_was", "qb_pass_ppg", "qb_factor", "qb_factor_week", "team_qb_factor", "qb_change", "qb_starter", "opponent", "matchup", "week_proj", "vor_ppg", "ros_value", "pos_rank", "ovr_rank",
                "own_pos_rank", "consensus_pos_rank", "consensus_sources", "fp_ros", "fp_week", "espn_proj",
                "fp_ros_best", "fp_ros_worst", "market_ros_points", "value_gap", "gap_ppg", "rank_gap",
-               "verdict", "note", "star", "owner", "owner_name", "pct_owned", "pct_change"]
+               "verdict", "note", "star", "hc_of", "hc_of_name", "hc_contingent", "hc_out_games", "owner", "owner_name", "pct_owned", "pct_change"]
 
 
 def main():
@@ -132,6 +132,7 @@ def main():
     teams = league.n_teams if league else config.DEFAULT_TEAMS
     lineup = league.lineup if league else config.DEFAULT_LINEUP
     df, repl = model.add_value(df, teams, lineup)
+    df = model.handcuffs(df, fill_ins)
     df = consensus.composite(df, league.projections if league else None)
     log(f"Rated {len(df)} players; {(df.verdict != '').sum()} flagged over/undervalued")
 
@@ -159,7 +160,7 @@ def main():
             "name": league.name, "mock": league.mock, "my_team": league.teams[league.my_team_id]["name"],
             "team": adv.my_team(), "waivers": adv.waivers(), "stashes": adv.waivers(limit=10, stashes=True),
             "trades": adv.trade_lists(),
-            "trade_ideas": adv.trade_ideas(), "note": league.error,
+            "trade_ideas": adv.trade_ideas(), "partners": adv.partners(), "note": league.error,
             "slots": league.slots_full or {**lineup, "D/ST": 1, "K": 1},
             "rosters": {str(tid): [{"player_id": e["player_id"], "name": e["name"], "pos": e["pos"], "slot": e["slot"],
                                     "espn_week_proj": e.get("espn_week_proj", league.espn_week_proj.get(e.get("espn_id")))}

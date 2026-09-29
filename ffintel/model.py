@@ -556,6 +556,80 @@ def apply_role_ceiling(df: pd.DataFrame, repl: dict) -> pd.DataFrame:
     return df
 
 
+# ---------------------------------------------------------------- handcuffs
+RB1_MISS_RATE = 0.16     # 2023-25: RB1s missed 16% of games from week 5 on
+HANDCUFF_SHARE = 0.75    # 2023-25: the backup scored 70-87% of the starter's output when he sat
+
+
+def handcuffs(df: pd.DataFrame, fill_ins: list | None = None) -> pd.DataFrame:
+    """Tag each team's backup running back as the handcuff to its starter.
+
+    Starter = the back with the most touches per game this season (history if none yet).
+    Handcuff = the next back, or whoever actually took over when the starter left a game.
+    Each handcuff gets the points he'd score while filling in (75% of the starter's rate,
+    or his own projection if higher) and the number of games the starter is expected to
+    miss: games already on the injury report plus the normal 16% rate on the rest.
+    """
+    df = df.copy()
+    for c in ("hc_of", "hc_of_name", "hc_contingent", "hc_out_games"):
+        df[c] = np.nan if c != "hc_of" and c != "hc_of_name" else None
+    fills = {f["injured_id"]: f["fill_in_id"] for f in (fill_ins or []) if f.get("position") == "RB"}
+    rb = df[df.position == "RB"].copy()
+    rb["tpg"] = (rb.touches.fillna(0) / rb.all_games.clip(lower=1)).where(rb.all_games.fillna(0) > 0,
+                                                                          rb.prior_ppg / 2)
+    for team, g in rb.groupby("team"):
+        g = g.sort_values(["tpg", "proj_ppg"], ascending=False)
+        if len(g) < 2:
+            continue
+        s1 = g.iloc[0]
+        cand = g.iloc[1:]
+        fid = fills.get(s1.player_id)
+        h = cand[cand.player_id == fid].iloc[0] if fid in set(cand.player_id) else cand.iloc[0]
+        if h.tpg < 1 and h.proj_ppg < 3:
+            continue  # no real backup identified
+        healthy = max(float(s1.ros_games or 0), 0.0)
+        out_games = float(s1.exp_missed or 0) + RB1_MISS_RATE * healthy
+        cont = max(float(h.proj_ppg), HANDCUFF_SHARE * float(s1.proj_ppg_healthy_qb if pd.notna(s1.get("proj_ppg_healthy_qb")) else s1.proj_ppg))
+        i = df.index[df.player_id == h.player_id][0]
+        df.at[i, "hc_of"], df.at[i, "hc_of_name"] = s1.player_id, s1["name"]
+        df.at[i, "hc_contingent"], df.at[i, "hc_out_games"] = round(cont, 2), round(out_games, 2)
+    return df
+
+
+def handcuff_bonus(rows: list[dict], lineup: dict, col: str, weeks: float) -> tuple[float, list]:
+    """Extra points per week a roster gets from its handcuffs.
+
+    If you own the starter too, the handcuff fills YOUR hole when the starter sits, so he is
+    worth his fill-in rate minus your next-best bench option. If you don't own the starter,
+    he is only worth something when his fill-in rate beats your weakest RB/FLEX starter.
+    """
+    from .advisor import best_lineup  # local import to avoid a cycle
+    ids = {r["player_id"] for r in rows}
+    _, starters = best_lineup(rows, lineup, col)
+    total, notes = 0.0, []
+    for h in rows:
+        s = h.get("hc_of")
+        if not s or pd.isna(h.get("hc_contingent")):
+            continue
+        cont, out_g = float(h["hc_contingent"]), float(h["hc_out_games"] or 0)
+        if s in ids:
+            alts = [(r.get(col) or 0) for r in rows if r["player_id"] not in starters and r["player_id"] != h["player_id"]
+                    and r["position"] in ("RB", "WR", "TE")]
+            base = max(alts, default=0.0)
+            own = True
+        else:
+            st = [(r.get(col) or 0) for r in rows if r["player_id"] in starters and r["position"] in ("RB", "WR", "TE")]
+            base = min(st, default=0.0)
+            own = False
+        rate = cont if col != "mkt_ppw" else cont  # fill-in rate is per game either way
+        gain = max(0.0, rate - base) * out_g
+        if gain > 0:
+            total += gain
+            notes.append({"player_id": h["player_id"], "name": h["name"], "starter": h.get("hc_of_name"),
+                          "owns_starter": own, "points": round(gain, 1)})
+    return total / max(weeks, 1), notes
+
+
 def replacement_levels(df: pd.DataFrame, teams: int, lineup: dict, col="proj_ppg") -> dict:
     """PPG of the best player left after every team fills its starting lineup."""
     pool = df[df.ros_games > 0].sort_values(col, ascending=False)
