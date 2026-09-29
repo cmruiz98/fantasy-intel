@@ -239,30 +239,77 @@ def passing_quality(cur: pd.DataFrame, hist: pd.DataFrame, k: float = 4.0):
     return out, league
 
 
+QB_ELASTICITY = 0.55  # measured 2023-25: top receivers lose ~0.55% per 1% drop in QB passing quality
+QB_FACTOR_RANGE = (0.60, 1.12)
+
+
 def team_qb_context(df: pd.DataFrame, cur: pd.DataFrame, quality: dict, league: float) -> dict:
-    """Who each team is likely to start at QB, and what that means for its pass catchers."""
-    att = cur[cur.position == "QB"].groupby(["player_id", "team"]).attempts.sum().reset_index() \
-        if len(cur) else pd.DataFrame(columns=["player_id", "team", "attempts"])
-    att_map = dict(zip(att.player_id, att.attempts.fillna(0)))
+    """Who each team is likely to start at QB, and what that means for its pass catchers.
+
+    A receiver's history and this season's stats were produced with his usual
+    quarterback, so the adjustment is relative to THAT quarterback, not the league
+    average: it is 1.00 whenever the usual starter plays. When a backup plays, receivers
+    move by (backup / starter) ^ 0.55, which is what 2023-25 games show: a backup at
+    70% of the starter's passing quality leaves top receivers with about 82% of their output.
+
+    Two versions are produced: one for next week (depends on whether the starter plays
+    THIS week) and one for the rest of the season (weighted by games he is expected to miss).
+    """
+    # The starter is whoever STARTED the most games (led his team in attempts that week),
+    # not whoever threw the most passes: a backup who played in relief can out-throw an
+    # injured starter without being the starter.
+    qb_rows = cur[cur.position == "QB"] if len(cur) else pd.DataFrame(columns=["player_id", "team", "week", "attempts"])
+    starts = qb_rows.sort_values("attempts", ascending=False).groupby(["team", "week"]).head(1) \
+        .groupby("player_id").size() if len(qb_rows) else pd.Series(dtype=float)
+    att = qb_rows.groupby("player_id").attempts.sum() if len(qb_rows) else pd.Series(dtype=float)
     out = {}
     qbs = df[df.position == "QB"]
+    lo, hi = QB_FACTOR_RANGE
+    # who started each team-week
+    starters = qb_rows.sort_values("attempts", ascending=False).groupby(["team", "week"]).head(1) \
+        if len(qb_rows) else qb_rows
     for team, grp in qbs.groupby("team"):
-        rows = grp.assign(att=grp.player_id.map(att_map).fillna(0),
+        rows = grp.assign(starts=grp.player_id.map(starts).fillna(0), att=grp.player_id.map(att).fillna(0),
                           q=grp.player_id.map(quality).fillna(league * 0.8))
-        incumbent = rows.sort_values(["att", "q"], ascending=False).iloc[0]
-        healthy = rows[(rows.exp_missed.fillna(0) < 1) & (rows.ros_games.fillna(1) > 0)]
-        backup = healthy.sort_values(["att", "q"], ascending=False).iloc[0] if len(healthy) else incumbent
-        out_games = float(min(incumbent.exp_missed or 0, incumbent.rem_weeks or 0))
-        weeks = float(incumbent.rem_weeks or 1) or 1.0
-        share_out = 0.0 if backup.player_id == incumbent.player_id else min(out_games / weeks, 1.0)
-        # a starter missing two of fifteen games barely moves his receivers
-        q = (1 - share_out) * float(incumbent.q) + share_out * float(backup.q)
-        factor = float(np.clip(1 + 0.5 * (q / league - 1), 0.85, 1.12))
-        pick = backup if share_out >= 0.5 else incumbent
-        out[team] = {"qb_id": backup.player_id if share_out > 0 else incumbent.player_id,
-                     "qb": pick["name"], "qb_pass_ppg": round(q, 1), "qb_factor": round(factor, 3),
-                     "starter_out": share_out > 0, "weeks_out": round(out_games, 1),
-                     "incumbent": incumbent["name"], "backup": backup["name"]}
+        # The reference QB is the INTENDED starter: whoever opened the season, unless he has
+        # been healthy and benched for the last two games. An injured Week 1 starter is still
+        # the reference, because that is who every receiver's projection was built around.
+        tw = starters[starters.team == team].sort_values("week") if len(starters) else starters
+        incumbent = rows.sort_values(["starts", "q", "att"], ascending=False).iloc[0]
+        if len(tw):
+            opener = tw.player_id.iloc[0]
+            recent = set(tw.player_id.iloc[-2:])
+            orow = rows[rows.player_id == opener]
+            if len(orow):
+                o = orow.iloc[0]
+                healthy = not (pd.notna(o.exp_missed) and o.exp_missed >= 0.5)
+                benched = healthy and opener not in recent and len(tw) >= 3
+                if not benched:
+                    incumbent = o
+        others = rows[(rows.player_id != incumbent.player_id) & (rows.exp_missed.fillna(0) < 1)]
+        backup = others.sort_values(["starts", "att", "q"], ascending=False).iloc[0] if len(others) else incumbent
+        q_inc, q_bak = max(float(incumbent.q), 1.0), max(float(backup.q), 1.0)
+
+        num = lambda v, d=0.0: float(v) if pd.notna(v) else d  # NaN is truthy, so `or 0` is not enough
+        weeks = max(num(incumbent.rem_weeks, 1.0), 1.0)
+        out_games = min(num(incumbent.exp_missed), weeks)
+        share_out = 0.0 if backup.player_id == incumbent.player_id else out_games / weeks
+        p_out_next = 0.0 if backup.player_id == incumbent.player_id else num(incumbent.p_miss_next)
+
+        def factor(share):
+            q = (1 - share) * q_inc + share * q_bak
+            return float(np.clip((q / q_inc) ** QB_ELASTICITY, lo, hi))
+
+        ros_f, week_f = factor(share_out), factor(p_out_next)
+        starter_next = backup if p_out_next >= 0.5 else incumbent
+        out[team] = {"qb_id": starter_next.player_id, "qb": starter_next["name"],
+                     "qb_pass_ppg": round(q_bak if p_out_next >= 0.5 else q_inc, 1),
+                     "qb_factor": round(ros_f, 3), "qb_factor_week": round(week_f, 3),
+                     "starter_out": out_games > 0 or p_out_next > 0.25,
+                     "weeks_out": round(out_games, 1), "p_out_next": round(p_out_next, 2),
+                     "incumbent": incumbent["name"], "incumbent_q": round(q_inc, 1),
+                     "backup": backup["name"], "backup_q": round(q_bak, 1),
+                     "backup_id": backup.player_id}
     return out
 
 
@@ -410,8 +457,10 @@ def build_ratings(cur, hist, players, sched, inj, extra_signals=None, short_game
     final = inj[inj.report_status.notna()] if not inj.empty else inj
     report_weeks = final.groupby("team").week.max().to_dict() if len(final) else {}
     last_played = dict(zip(df.player_id, df.last_week.fillna(0)))
+    practice_weeks = inj.groupby("team").week.max().to_dict() if not inj.empty else {}
     inj_df = injuries.combine(signals, report_weeks, dict(zip(df.player_id, df.team)), last_played,
-                              team_last.to_dict())
+                              team_last.to_dict(), plan_week=rem.get("plan_week", cur_week),
+                              practice_weeks=practice_weeks)
     df = df.merge(inj_df, on="player_id", how="left")
     weeks = rem.get("weeks", {})
     df["rem_weeks"] = df.team.map(lambda t: len(weeks.get(t, [])))
@@ -429,11 +478,16 @@ def build_ratings(cur, hist, players, sched, inj, extra_signals=None, short_game
     df["qb"] = df.team.map(lambda t: qbc.get(t, {}).get("qb"))
     df["qb_pass_ppg"] = df.team.map(lambda t: qbc.get(t, {}).get("qb_pass_ppg"))
     df["qb_change"] = df.team.map(lambda t: bool(qbc.get(t, {}).get("starter_out")))
-    df["qb_starter"] = [pid == qbc.get(t, {}).get("qb_id") for pid, t in zip(df.player_id, df.team)]
+    df["qb_starter"] = [pid == qbc.get(t, {}).get("qb_id") and qbc.get(t, {}).get("starter_out", False)
+                        for pid, t in zip(df.player_id, df.team)]
+    share = df.position.map(PASS_SHARE).fillna(0)
     tf = df.team.map(lambda t: qbc.get(t, {}).get("qb_factor", 1.0)).astype(float)
-    df["team_qb_factor"] = tf
+    tw = df.team.map(lambda t: qbc.get(t, {}).get("qb_factor_week", 1.0)).astype(float)
+    df["team_qb_factor"], df["team_qb_factor_week"] = tf, tw
     df["qb_was"] = df.team.map(lambda t: qbc.get(t, {}).get("incumbent"))
-    df["qb_factor"] = 1 + (tf - 1) * df.position.map(PASS_SHARE).fillna(0)
+    df["qb_factor"] = tf ** share           # rest of season
+    df["qb_factor_week"] = tw ** share      # next game only
+    df["proj_ppg_healthy_qb"] = df.proj_ppg
     df["proj_ppg"] = df.proj_ppg * df.qb_factor
     df["ros_points"] = df.proj_ppg * df.ros_games
 
@@ -442,7 +496,7 @@ def build_ratings(cur, hist, players, sched, inj, extra_signals=None, short_game
     opp = rem.get("opp", {})
     df["opponent"] = df.team.map(opp)
     df["matchup"] = [mf.get((o, pp), 1.0) if isinstance(o, str) else 1.0 for o, pp in zip(df.opponent, df.position)]
-    df["week_proj"] = df.proj_ppg * df.matchup * df.play_prob
+    df["week_proj"] = df.proj_ppg_healthy_qb * df.qb_factor_week * df.matchup * df.play_prob
 
     df["trend"] = np.select([df.l3_ppg > df.proj_ppg * 1.2, df.l3_ppg < df.proj_ppg * 0.8], ["up", "down"], "")
     df = df.drop(columns=[c for c in ["display_name", "latest_team", "headshot_x", "headshot_y",

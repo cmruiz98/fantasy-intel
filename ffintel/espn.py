@@ -29,6 +29,8 @@ class League:
     projections: dict = field(default_factory=dict)  # gsis_id -> ESPN ROS points
     ownership: dict = field(default_factory=dict)    # gsis_id -> (pct owned, pct change)
     draft_ranks: dict = field(default_factory=dict)  # gsis_id -> ESPN preseason draft rank
+    slots_full: dict = field(default_factory=dict)   # every starting slot incl. D/ST and K
+    espn_week_proj: dict = field(default_factory=dict)  # espn_id -> ESPN projection for the coming week
     drafted: dict = field(default_factory=dict)      # gsis_id -> overall pick in YOUR draft
     waiver_status: dict = field(default_factory=dict)  # gsis_id -> FREEAGENT / WAIVERS
     mock: bool = False
@@ -78,6 +80,11 @@ def fetch(players: pd.DataFrame, ids: pd.DataFrame | None, season: int, week: in
         if name in ("QB", "RB", "WR", "TE", "FLEX", "OP") and v:
             lineup[name] = lineup.get(name, 0) + int(v)
     lineup = lineup or dict(config.DEFAULT_LINEUP)
+    slots_full = {}
+    for k, v in slots.items():
+        name = SLOT.get(int(k))
+        if name and name not in ("BN", "IR") and v:
+            slots_full[name] = slots_full.get(name, 0) + int(v)
     rec_pts = config.DEFAULT_REC_PTS
     for item in st.get("scoringSettings", {}).get("scoringItems", []):
         if item.get("statId") == 53:
@@ -107,7 +114,8 @@ def fetch(players: pd.DataFrame, ids: pd.DataFrame | None, season: int, week: in
         my_id = int(config.MY_TEAM_ID)
 
     league = League(name=st.get("name", f"League {config.LEAGUE_ID}"), teams=teams, rosters=rosters,
-                    my_team_id=my_id, n_teams=len(teams) or config.DEFAULT_TEAMS, lineup=lineup, rec_pts=rec_pts)
+                    my_team_id=my_id, n_teams=len(teams) or config.DEFAULT_TEAMS, lineup=lineup, rec_pts=rec_pts,
+                    slots_full=slots_full or {**config.DEFAULT_LINEUP, "D/ST": 1, "K": 1})
     try:
         _player_pool(s, url, league, idmap, season, week)
     except Exception as ex:  # rosters still usable without it
@@ -126,7 +134,7 @@ def fetch(players: pd.DataFrame, ids: pd.DataFrame | None, season: int, week: in
 def _player_pool(s, url, league, idmap, season, week):
     flt = {"players": {
         "filterStatus": {"value": ["FREEAGENT", "WAIVERS", "ONTEAM"]},
-        "filterSlotIds": {"value": [0, 2, 4, 6]},
+        "filterSlotIds": {"value": [0, 2, 4, 6, 16, 17]},
         "limit": 1500,
         "sortPercOwned": {"sortAsc": False, "sortPriority": 1},
         "filterStatsForTopScoringPeriodIds": {"value": 2, "additionalValue": [f"00{season}", f"10{season}"]},
@@ -136,7 +144,11 @@ def _player_pool(s, url, league, idmap, season, week):
     r.raise_for_status()
     for p in r.json().get("players", []):
         pl = p.get("player", {})
-        gid = idmap.get(int(pl.get("id", 0)))
+        eid = int(pl.get("id", 0))
+        for stt in pl.get("stats", []):  # ESPN's projection for the coming week (used for K and D/ST)
+            if stt.get("statSourceId") == 1 and stt.get("scoringPeriodId") == week and stt.get("statSplitTypeId") == 1:
+                league.espn_week_proj[eid] = round(float(stt.get("appliedTotal") or 0), 1)
+        gid = idmap.get(eid)
         if not gid:
             continue
         inj = INJ.get(pl.get("injuryStatus", ""))
@@ -182,7 +194,16 @@ def mock(df: pd.DataFrame, seed: int = 7) -> League:
                 counts[t][p.position] += 1
                 avail.pop(i)
                 break
+    nfl = ["BUF", "KC", "BAL", "PHI", "DET", "SF", "DAL", "MIN", "PIT", "DEN", "HOU", "LAC"]
+    kickers = ["B. Aubrey", "C. Boswell", "J. Bates", "H. Butker", "K. Fairbairn", "J. Elliott",
+               "C. Dicker", "W. Lutz", "T. Bass", "J. Myers", "E. McPherson", "Y. Koo"]
+    for t in rosters:
+        rosters[t].append({"player_id": None, "espn_id": -t, "name": f"{nfl[t-1]} D/ST", "pos": "D/ST", "slot": "D/ST",
+                           "espn_week_proj": round(float(rng.normal(7, 2)), 1)})
+        rosters[t].append({"player_id": None, "espn_id": -100 - t, "name": kickers[t-1], "pos": "K", "slot": "K",
+                           "espn_week_proj": round(float(rng.normal(8, 1.5)), 1)})
     teams = {t: {"name": f"Demo Team {t}", "abbrev": f"T{t}", "record": "1-1", "points_for": 0} for t in rosters}
     teams[1]["name"] = "Demo: My Team"
     return League(name="Demo league (mock data)", teams=teams, rosters=rosters, my_team_id=1, n_teams=12,
-                  lineup=dict(config.DEFAULT_LINEUP), rec_pts=0.5, mock=True)
+                  lineup=dict(config.DEFAULT_LINEUP), rec_pts=0.5, mock=True,
+                  slots_full={**config.DEFAULT_LINEUP, "D/ST": 1, "K": 1})

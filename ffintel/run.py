@@ -45,7 +45,7 @@ PLAYER_COLS = ["player_id", "name", "position", "team", "age", "headshot", "game
                "carries", "rush_yds", "pass_yds", "pass_tds", "ints", "tds", "touches", "rz_targets",
                "ez_targets", "rz_carries", "i10_carries", "rz_tgt_share", "rz_rush_share", "xfp_total",
                "inj_status", "inj_detail", "inj_source", "inj_updated", "inj_signals", "fill_in_for", "play_prob", "on_bye", "exp_missed", "ros_games", "ros_points",
-               "qb", "qb_was", "qb_pass_ppg", "qb_factor", "team_qb_factor", "qb_change", "qb_starter", "opponent", "matchup", "week_proj", "vor_ppg", "ros_value", "pos_rank", "ovr_rank",
+               "qb", "qb_was", "qb_pass_ppg", "qb_factor", "qb_factor_week", "team_qb_factor", "qb_change", "qb_starter", "opponent", "matchup", "week_proj", "vor_ppg", "ros_value", "pos_rank", "ovr_rank",
                "own_pos_rank", "consensus_pos_rank", "consensus_sources", "fp_ros", "fp_week", "espn_proj",
                "fp_ros_best", "fp_ros_worst", "market_ros_points", "value_gap", "gap_ppg", "rank_gap",
                "verdict", "note", "star", "owner", "owner_name", "pct_owned", "pct_change"]
@@ -96,6 +96,10 @@ def main():
     sig, short_games, fill_ins = injuries.in_game(sources.pbp(season), players, season, skill)
     log(f"  play-by-play: {sum(s.status == 'LEFT GAME' for s in sig)} left games injured, "
         f"{sum(s.status == 'RETURNED' for s in sig)} returned")
+    pbp_cur = sources.pbp(season)
+    exits = injuries.early_exits(pbp_cur, cur, {x.player_id for x in sig})
+    sig += exits
+    log(f"  early exits without a logged injury: {len(exits)}")
     feed_status = {"Play-by-play": f"{len(sig)} in-game injuries"}
     espn_ids = espn._id_map(players, ids)
     nidx = injuries.name_index(players)
@@ -155,7 +159,12 @@ def main():
             "name": league.name, "mock": league.mock, "my_team": league.teams[league.my_team_id]["name"],
             "team": adv.my_team(), "waivers": adv.waivers(), "stashes": adv.waivers(limit=10, stashes=True),
             "trades": adv.trade_lists(),
-            "trade_ideas": adv.trade_ideas(), "note": league.error}
+            "trade_ideas": adv.trade_ideas(), "note": league.error,
+            "slots": league.slots_full or {**lineup, "D/ST": 1, "K": 1},
+            "rosters": {str(tid): [{"player_id": e["player_id"], "name": e["name"], "pos": e["pos"], "slot": e["slot"],
+                                    "espn_week_proj": e.get("espn_week_proj", league.espn_week_proj.get(e.get("espn_id")))}
+                                   for e in entries]
+                        for tid, entries in league.rosters.items()}}
     elif league:
         listing = ", ".join(f"{k} = {v['name']}" for k, v in league.teams.items())
         out["league_error"] = ("Connected to ESPN but couldn't tell which team is yours. "

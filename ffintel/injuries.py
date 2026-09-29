@@ -78,6 +78,7 @@ class Signal:
     week: int | None = None
     positive: bool = False  # e.g. "full practice", "will play"
     p_miss: float | None = None  # chance he misses the next game (default: min(games, 1))
+    mild: bool = False            # e.g. "minor sprain", "hoping to play": likely plays
 
 
 # ---------------------------------------------------------------- text reading
@@ -88,6 +89,11 @@ POSITIVE = re.compile(r"\b(cleared|gained clearance|will play|expected to play|f
                       r"no injury designation|removed from (?:the )?injury report|activated|will suit up|suited up|"
                       r"returns? to practice fully|good to go|shed(?: the)? (?:questionable|doubtful)|"
                       r"upgraded to (?:full|active))\b", re.I)
+MILD = re.compile(r"\b(minor|hop(?:es|eful|ing) to play|expects? to play|expected to play|optimistic|"
+                  r"day[- ]to[- ]day|should be (?:ready|fine|good|available)|not (?:expected|believed) to (?:miss|be serious)|"
+                  r"avoided (?:a )?(?:serious|major|significant|long[- ]term)|no structural damage|precaution(?:ary)?|"
+                  r"good chance (?:to|of) play|on track to play|trending toward playing|likely to play|"
+                  r"nothing serious|isn't serious|not serious|won't miss|will not miss)\b", re.I)
 NAME_RE = re.compile(r"\b[A-Z][a-z]+(?:['\-][A-Za-z]+)?\s+[A-Z][a-zA-Z.'\-]+\b")
 
 
@@ -268,6 +274,39 @@ def _fill_in(after: pd.DataFrame, injured_id, team, players):
              "plays": int(counts.iloc[0]), "share": round(float(counts.iloc[0] / counts.sum()), 2)}]
 
 
+def early_exits(pbp: pd.DataFrame, cur: pd.DataFrame, already: set) -> list[Signal]:
+    """Starters who vanished from a game early without an injury being logged.
+
+    The play-by-play does not always record injuries. A regular who plays a fraction of his
+    usual snaps and is never involved in a play after the first half almost always got hurt
+    (Jefferson in week 3: 12% of snaps, last touch in the first quarter).
+    """
+    out = []
+    if pbp.empty or cur.empty or "snap_pct" not in cur:
+        return out
+    c = cur.dropna(subset=["snap_pct"]).sort_values("week")
+    last_week = int(c.week.max())
+    p = pbp[(pbp.season_type == "REG") & (pbp.week == last_week)]
+    touch = pd.concat([p[["game_id", "qtr", "time", col]].rename(columns={col: "pid"})
+                       for col in ("receiver_player_id", "rusher_player_id", "passer_player_id") if col in p])
+    touch = touch.dropna(subset=["pid"]).sort_values(["qtr", "time"], ascending=[True, False])
+    last_touch = touch.groupby("pid").tail(1).set_index("pid")
+    for pid, g in c.groupby("player_id"):
+        if pid in already or len(g) < 2 or int(g.week.iloc[-1]) != last_week:
+            continue
+        usual, now = g.iloc[:-1].snap_pct.mean(), g.iloc[-1].snap_pct
+        if usual < 0.6 or now > 0.45 * usual:
+            continue
+        lt = last_touch.loc[pid] if pid in last_touch.index else None
+        if lt is None or float(lt.qtr) <= 2:
+            when = f"after Q{int(lt.qtr)} {lt.time}" if lt is not None else "early"
+            out.append(Signal(pid, "LEFT GAME", 1.0,
+                              f"Played {now:.0%} of snaps in week {last_week} (usually {usual:.0%}) and had no touches "
+                              f"{when}. Likely left injured; the injury was not logged.",
+                              "Snap counts + play-by-play", "", last_week, p_miss=0.4))
+    return out
+
+
 # ---------------------------------------------------------------- 2. snap collapse
 def snap_collapse(cur: pd.DataFrame, already: set) -> list[Signal]:
     out = []
@@ -400,15 +439,19 @@ def espn_feed(espn_idmap: dict, nidx: dict, game_dates: dict) -> list[Signal]:
                 if g is not None and status in ("OUT", "IR", "PUP", "SUSPENSION", None, "SEASON"):
                     games = max(g, games if label == "SEASON" else 0)
             positive = bool(POSITIVE.search(mine or comment))
+            mild = bool(MILD.search(mine)) and not positive
             if positive and not status:
                 games, label = 0.0, "NEWS"  # the write-up says he is fine
+            elif mild and games < 1.5:
+                games = min(games, 0.3) if games else 0.25
+                label = status if status in ("QUESTIONABLE", "OUT", "DOUBTFUL") else "QUESTIONABLE"
             if games <= 0 and not status and not positive:
                 continue  # a blurb about a healthy player, not an injury
             detail = (f"{body}. " if body else "") + (comment[:260] if comment else (status or "").title())
             if details.get("returnDate"):
                 detail += f" (ESPN return estimate: {details['returnDate'][:10]})"
             out.append(Signal(pid, label, games, detail, "ESPN injury desk", it.get("date", ""),
-                              positive=positive))
+                              positive=positive, mild=mild))
     return out
 
 
@@ -434,12 +477,13 @@ def sleeper_feed(ids: pd.DataFrame, nidx: dict) -> list[Signal]:
         sev = text_severity(notes)
         if sev and sev[0] > games:
             games = sev[0]
+        mild = bool(MILD.search(notes)) and games < 1.5
         upd = p.get("news_updated")
         when = dt.datetime.fromtimestamp(upd / 1000, dt.timezone.utc).isoformat() if upd else ""
         body = p.get("injury_body_part") or ""
         out.append(Signal(pid, "SEASON" if games >= 99 else status, games,
                           f"{body}{': ' if body and notes else ''}{notes}".strip() or status.title(),
-                          "Sleeper", when))
+                          "Sleeper", when, mild=mild))
     return out
 
 
@@ -466,11 +510,14 @@ def news_feed(espn_idmap: dict, nidx: dict) -> list[Signal]:
             sev = text_severity(text)
             pos = bool(POSITIVE.search(text))
             games = sev[0] if sev else 0.0
-            if games < 0.3 and not pos:
+            mild = bool(MILD.search(text)) and games < 1.5
+            if games < 0.3 and not pos and not mild:
                 continue  # mentions an injury topic but says nothing about him missing time
+            if mild:
+                games = min(games, 0.3) if games else 0.25
             label = "SEASON" if games >= 99 else ("NEWS" if games < 0.3 else ("OUT" if games >= 1 else "QUESTIONABLE"))
             out.append(Signal(pid, label, games, a.get("headline", "")[:200], "ESPN news", pub,
-                              positive=pos and not sev))
+                              positive=pos and not sev, mild=mild))
     return out
 
 
@@ -523,12 +570,15 @@ def rss_feed(names: dict) -> list[Signal]:
                 sev = text_severity(text)
                 games = sev[0] if sev else 0.0
                 pos = bool(POSITIVE.search(text))
-                if games < 0.3 and not pos:
+                mild = bool(MILD.search(text)) and games < 1.5
+                if games < 0.3 and not pos and not mild:
                     continue  # injury-flavoured headline, no actual availability news
+                if mild:
+                    games = min(games, 0.3) if games else 0.25
                 status = "SEASON" if games >= 99 else ("NEWS" if games < 0.3 else
                                                       ("OUT" if games >= 1 else "QUESTIONABLE"))
                 out.append(Signal(pid, status, games, title[:200], f"{label} news", when,
-                                  positive=bool(POSITIVE.search(text)) and not sev))
+                                  positive=pos and not sev, mild=mild))
     if errors and not out:
         raise RuntimeError("; ".join(errors))
     return out
@@ -542,74 +592,130 @@ def league_signals(league_injuries: dict) -> list[Signal]:
 
 # ---------------------------------------------------------------- merge
 def _ts(s):
+    """Parse a timestamp to UTC; None when missing. (NaT is truthy and never compares, so it must not leak.)"""
+    if not s:
+        return None
     try:
         t = pd.Timestamp(s)
-        return t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
     except Exception:
         return None
+    if pd.isna(t):
+        return None
+    return t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+
+
+OFFICIAL = ("Official injury report", "Practice report")
+LONG_STATUSES = {"SEASON", "IR", "PUP", "NFI", "SUSPENSION", "UNAVAILABLE"}
+GAME_STATUSES = {"OUT", "DOUBTFUL", "QUESTIONABLE", "DNP", "LEFT GAME", "INACTIVE", "SNAPS DOWN"}
+# Chance he misses the NEXT game when a live feed still shows a status but this week's
+# official report is not out yet. Early in the week that status usually describes the game
+# just played, and most players listed "Out" for one game are back within a week or two.
+PENDING_P = {"OUT": 0.55, "DOUBTFUL": 0.4, "QUESTIONABLE": 0.2, "LEFT GAME": 0.5, "INACTIVE": 0.45,
+             "DNP": 0.3, "SNAPS DOWN": 0.1}
+REPORT_P = {"OUT": 1.0, "DOUBTFUL": 0.8, "QUESTIONABLE": 0.25, "DNP": 0.3}
 
 
 def combine(signals: list[Signal], report_weeks: dict, player_team: dict, last_played: dict,
-            team_last_week: dict | None = None) -> pd.DataFrame:
-    """One row per player: headline status, expected games missed, and every signal.
+            team_last_week: dict | None = None, plan_week: int | None = None,
+            practice_weeks: dict | None = None) -> pd.DataFrame:
+    """One row per player: headline status, chance to play next game, games expected missed.
 
-    report_weeks: team -> latest official report week
-    last_played:  player_id -> last week he appeared in a box score
+    The rules, in order of authority:
+      1. This week's official report (for the game about to be played) is the final word,
+         and a team that has filed one without listing him means he is fine.
+      2. Multi-week information (IR, "out 4-6 weeks", season-ending) holds until something
+         newer says he has been cleared or activated.
+      3. Otherwise the NEWEST short-term information wins. A status on a live feed before the
+         week's report is out usually describes the last game, so it counts as "pending"
+         rather than a certain absence, and newer mild news ("minor", "hoping to play")
+         caps the risk.
     """
+    team_last_week = team_last_week or {}
+    practice_weeks = practice_weeks or {}
     by = {}
     for s in signals:
         by.setdefault(s.player_id, []).append(s)
     rows = []
     for pid, sigs in by.items():
         team = player_team.get(pid)
+        tlw = team_last_week.get(team, 0)
         live = []
         for s in sigs:
-            # an in-game injury is superseded once the team's final (game-status) report for a
-            # later week is out; mid-week practice notes alone don't settle it
             if s.status in ("LEFT GAME", "RETURNED", "SNAPS DOWN") and s.week is not None \
                     and report_weeks.get(team, 0) > s.week:
-                continue
-            # an official status for a game he has since played is resolved
-            if s.source in ("Official injury report", "Practice report") and s.week is not None \
-                    and last_played.get(pid, 0) >= s.week:
-                continue
-            # a status for a game already played (he sat it out) carries forward, discounted:
-            # roughly 60% of players ruled out one week also miss the next
-            if s.source in ("Official injury report", "Practice report") and s.week is not None \
-                    and (team_last_week or {}).get(team, 0) >= s.week and s.games > 0:
-                missed_it = last_played.get(pid, 0) < s.week
-                g = max(s.games * 0.6, 0.6) if missed_it and s.games < 4 else s.games * 0.6
-                s = Signal(**{**asdict(s), "games": round(g, 2), "p_miss": min(g, 1.0),
-                              "detail": s.detail + (f"; missed the week {s.week} game, next status pending"
-                                                    if missed_it else "")})
+                continue  # superseded by a later game-status report
+            if s.source in OFFICIAL and s.week is not None and last_played.get(pid, 0) >= s.week:
+                continue  # a report for a game he then played is resolved
             live.append(s)
-        official_weeks = {s.week for s in live if s.source in ("Official injury report", "Practice report")}
-        live = [s for s in live if not (s.status == "INACTIVE" and s.week in official_weeks)]
         if not live:
             continue
-        negatives = [s for s in live if s.games > 0]
-        games = max((s.games for s in negatives), default=0.0)
-        # a newer "cleared / full practice" beats older bad news of short duration
-        newest_pos = max((_ts(s.when) for s in live if s.positive and _ts(s.when) is not None), default=None)
-        newest_neg = max((_ts(s.when) for s in negatives if _ts(s.when) is not None), default=None)
-        cleared = newest_pos is not None and (newest_neg is None or newest_pos > newest_neg) and games <= 1.0
-        if cleared:
-            games = min(games, 0.1)
-        head = sorted(negatives or live, key=lambda s: (-s.games, SEVERITY.index(s.status) if s.status in SEVERITY else 99))[0]
-        if cleared and negatives:
-            head = max((s for s in live if s.positive and _ts(s.when) is not None), key=lambda s: _ts(s.when))
-        status = head.status
-        if status in ("HEALTHY", "NEWS") or (cleared and games <= 0.1 and status not in ("RETURNED",)):
-            status = "CLEARED" if cleared and negatives else ("" if status == "HEALTHY" else status)
-        if games == 0 and not (cleared and negatives):
-            continue  # nothing here says he might miss time
-        p_miss = max((s.p_miss if s.p_miss is not None else min(s.games, 1.0) for s in negatives), default=0.0)
-        if cleared:
-            p_miss = min(p_miss, 0.1)
+
+        report_filed = plan_week is not None and practice_weeks.get(team, 0) >= plan_week
+        this_week = [s for s in live if s.source in OFFICIAL and s.week == plan_week]
+        past_official = [s for s in live if s.source in OFFICIAL and s.week is not None
+                         and (plan_week is None or s.week < plan_week) and s.games > 0]
+        good = [s for s in live if (s.positive or s.mild) and _ts(s.when) is not None]
+        newest_good = max(good, key=lambda s: _ts(s.when)) if good else None
+        long = [s for s in live if (s.games >= 1.5 or s.status in LONG_STATUSES) and not s.mild]
+        short = [s for s in live if s not in long and s.source not in OFFICIAL
+                 and s.status in GAME_STATUSES and s.games > 0]
+
+        # --- 2. multi-week
+        lt, lt_head = 0.0, None
+        for s in long:
+            ts = _ts(s.when)
+            overridden = newest_good is not None and ts is not None and _ts(newest_good.when) > ts \
+                and (newest_good.positive or s.status not in ("IR", "PUP", "NFI", "SEASON", "SUSPENSION"))
+            if not overridden and s.games > lt:
+                lt, lt_head = s.games, s
+        # --- 1 & 3. the next game
+        note, head = "", None
+        if this_week:
+            head = max(this_week, key=lambda s: REPORT_P.get(s.status, 0))
+            p = 0.0 if head.positive else REPORT_P.get(head.status, head.p_miss if head.p_miss is not None else min(head.games, 1))
+        elif report_filed and not past_official:
+            p, head = 0.0, None  # team filed this week's report and he is not on it: he's fine
+        else:
+            cands = short + past_official
+            if cands:
+                head = max(cands, key=lambda s: (_ts(s.when) or pd.Timestamp(0, tz="UTC"), s.games))
+                p = head.p_miss if head.status == "LEFT GAME" and head.p_miss is not None \
+                    else PENDING_P.get(head.status, min(head.games, 1.0))
+                if head.source in OFFICIAL:  # he sat out the last game with this
+                    p = 0.6 if last_played.get(pid, 0) < (head.week or 0) else p
+                note = " This week's injury report is not out yet."
+            else:
+                p = 0.0
+            if newest_good is not None and (head is None or (_ts(head.when) or pd.Timestamp(0, tz="UTC"))
+                                            <= _ts(newest_good.when)):
+                cap = 0.1 if newest_good.positive else 0.3
+                if p > cap or head is None:
+                    p, head, note = min(p, cap) if head else (0.0 if newest_good.positive else 0.25), \
+                        newest_good, ""
+        if lt >= 1:
+            p = 1.0
+        games = max(lt, p)
+        if games <= 0.02 and not good:
+            continue
+        top = lt_head if lt >= 1 else head
+        if top is None:
+            top = newest_good or live[0]
+        status = top.status
+        if top is newest_good and newest_good is not None:
+            status = "CLEARED" if newest_good.positive else "QUESTIONABLE"
+        elif (top in short or top in past_official) and not this_week and lt < 1 \
+                and top.status in ("OUT", "DOUBTFUL", "INACTIVE") and p < 0.8:
+            status = "TBD"  # last game's status; this week's is not known yet
+        if games <= 0.02 and status not in ("CLEARED",):
+            continue
         sig_list = sorted((asdict(s) for s in live), key=lambda d: str(d["when"]), reverse=True)
-        rows.append({"player_id": pid, "inj_status": status or None, "inj_detail": head.detail,
-                     "inj_source": head.source, "exp_missed_raw": games, "p_miss_next": p_miss,
+        detail = top.detail.strip()
+        if note and top is head and lt < 1:  # "report pending" only matters for game-to-game statuses
+            detail = (detail if detail.endswith((".", "!", "?")) else detail + ".") + note
+        rows.append({"player_id": pid, "inj_status": status or None,
+                     "inj_detail": detail, "inj_source": top.source,
+                     "exp_missed_raw": round(games, 2), "p_miss_next": round(min(p, 1.0), 2),
                      "inj_updated": max((str(s.when) for s in live), default=""),
-                     "inj_signals": [{k: v for k, v in d.items() if k not in ("player_id",)} for d in sig_list]})
-    return pd.DataFrame(rows, columns=["player_id", "inj_status", "inj_detail", "inj_source", "exp_missed_raw", "p_miss_next",
-                                       "inj_updated", "inj_signals"])
+                     "inj_signals": [{k: v for k, v in d.items() if k != "player_id"} for d in sig_list]})
+    return pd.DataFrame(rows, columns=["player_id", "inj_status", "inj_detail", "inj_source", "exp_missed_raw",
+                                       "p_miss_next", "inj_updated", "inj_signals"])
