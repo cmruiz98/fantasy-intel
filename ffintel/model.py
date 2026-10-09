@@ -18,7 +18,7 @@ Then injuries, byes and the schedule turn points-per-game into rest-of-season po
 import numpy as np
 import pandas as pd
 
-from . import config, injuries
+from . import config, injuries, vegas
 
 BASE_K = {"QB": 6.0, "RB": 4.0, "WR": 5.0, "TE": 5.0}
 SEASON_WEIGHTS = [0.17, 0.33, 0.5]  # oldest -> newest history season
@@ -145,6 +145,37 @@ def remaining_schedule(sched: pd.DataFrame, season: int):
             if int(g.week) == plan_week:
                 opp[t] = o
     return cur_week, {"plan_week": plan_week, "weeks": weeks, "opp": opp}
+
+
+def market_injury_check(df: pd.DataFrame, fp: pd.DataFrame | None) -> pd.DataFrame:
+    """Cross-check injury length against the experts.
+
+    Feeds often say only "IR" with no timeline. FantasyPros keeps two lists: dynasty
+    (long-term value) and rest-of-season. A hurt starter who is still in the dynasty
+    rankings but has been dropped from rest-of-season rankings, or buried far below where
+    his talent would put him, is one the experts expect to miss most or all of the year.
+    Only applies to players already carrying a real injury designation.
+    """
+    if fp is None or fp.empty or "fp_dyn" not in fp:
+        return df
+    df = df.copy()
+    m = fp.set_index("player_id")
+    ros, dyn = df.player_id.map(m.fp_ros), df.player_id.map(m.fp_dyn)
+    healthy_rank = df.groupby("position").proj_ppg.rank(ascending=False, method="first")
+    hurt = df.inj_status.isin(["IR", "PUP", "NFI", "SEASON", "OUT", "TBD", "LEFT GAME", "SUSPENSION"]) \
+        & (df.exp_missed_raw.fillna(0) >= 0.5)
+    dropped = dyn.notna() & ros.isna() & (healthy_rank <= 40)
+    long_status = df.inj_status.isin(["IR", "PUP", "NFI", "SEASON", "SUSPENSION"]) | (df.exp_missed_raw.fillna(0) >= 2)
+    buried = ros.notna() & (healthy_rank <= 30) & (ros > np.maximum(60, 4 * healthy_rank)) & long_status
+    hit = hurt & (dropped | buried) & (df.exp_missed_raw.fillna(0) < df.rem_weeks)
+    df.loc[hit, "exp_missed_raw"] = df.loc[hit, "rem_weeks"].astype(float)
+    df.loc[hit, "p_miss_next"] = 1.0
+    df.loc[hit, "inj_status"] = np.where(df.loc[hit, "inj_status"].isin(["IR", "PUP", "NFI"]),
+                                         df.loc[hit, "inj_status"], "OUT")
+    df.loc[hit, "inj_detail"] = df.loc[hit, "inj_detail"].fillna("").astype(str).str.rstrip(". ") + \
+        ". Experts have dropped him from rest-of-season rankings, so he is treated as out for the season."
+    df["market_long_term"] = hit
+    return df
 
 
 def report_dates(sched: pd.DataFrame, season: int) -> dict:
@@ -339,7 +370,7 @@ def age_factor(pos, age):
 
 
 def build_ratings(cur, hist, players, sched, inj, extra_signals=None, short_games=frozenset(),
-                  draft_ranks=None, drafted=None) -> tuple[pd.DataFrame, dict]:
+                  draft_ranks=None, drafted=None, fp=None, lines=None) -> tuple[pd.DataFrame, dict]:
     season = config.SEASON
     cur_week, rem = remaining_schedule(sched, season)
     priors = history_priors(hist, players)
@@ -446,9 +477,17 @@ def build_ratings(cur, hist, players, sched, inj, extra_signals=None, short_game
     signals += injuries.roster_signals(players, played_last)
     signals += injuries.report_signals(inj, report_dates(sched, season))
     now = pd.Timestamp.now(tz="UTC").isoformat()
+    # dated at the game itself (late evening ET), so news from the days after it is newer
+    gs = sched[(sched.season == season) & (sched.game_type == "REG")]
+    game_day = {}
+    for g in gs.itertuples(index=False):
+        t = pd.Timestamp(g.gameday).tz_localize("America/New_York").replace(hour=23).tz_convert("UTC").isoformat()
+        game_day[(g.home_team, int(g.week))] = game_day[(g.away_team, int(g.week))] = t
     for pid in missed_last:
+        row = df.loc[df.player_id == pid].iloc[0]
+        when = game_day.get((row.team, int(row.team_last_week)), now)
         signals.append(injuries.Signal(pid, "INACTIVE", injuries.BASE_GAMES["INACTIVE"],
-                                       "Did not play in his team's last game", "Box scores", now,
+                                       "Did not play in his team's last game", "Box scores", when,
                                        int(df.loc[df.player_id == pid, "team_last_week"].iloc[0])))
     flagged = {s.player_id for s in signals if s.status in ("LEFT GAME", "RETURNED")}
     signals += injuries.snap_collapse(cur, flagged)
@@ -464,6 +503,7 @@ def build_ratings(cur, hist, players, sched, inj, extra_signals=None, short_game
     df = df.merge(inj_df, on="player_id", how="left")
     weeks = rem.get("weeks", {})
     df["rem_weeks"] = df.team.map(lambda t: len(weeks.get(t, [])))
+    df = market_injury_check(df, fp)
     plan_week = rem.get("plan_week", cur_week)
     df["plays_this_week"] = df.team.map(lambda t: plan_week in weeks.get(t, []))
     df["on_bye"] = ~df.plays_this_week & (df.rem_weeks > 0)
@@ -496,7 +536,20 @@ def build_ratings(cur, hist, players, sched, inj, extra_signals=None, short_game
     opp = rem.get("opp", {})
     df["opponent"] = df.team.map(opp)
     df["matchup"] = [mf.get((o, pp), 1.0) if isinstance(o, str) else 1.0 for o, pp in zip(df.opponent, df.position)]
-    df["week_proj"] = df.proj_ppg_healthy_qb * df.qb_factor_week * df.matchup * df.play_prob
+    # Vegas: this week's implied team total vs the team's usual, when a line is posted.
+    # It replaces the defense matchup factor, and already prices in part of a QB change.
+    lines = lines or {}
+    df["imp_total"] = df.team.map(lambda t: (lines.get(t) or {}).get("implied"))
+    df["imp_avg"] = df.team.map(lambda t: (lines.get(t) or {}).get("team_avg"))
+    df["spread"] = df.team.map(lambda t: (lines.get(t) or {}).get("spread"))
+    vf = [vegas.factor(pp, lines.get(t)) if pw else None
+          for pp, t, pw in zip(df.position, df.team, df.plays_this_week)]
+    df["vegas"] = pd.array(vf, dtype="Float64").astype(float)
+    has_line = df.vegas.notna()
+    overlap = df.position.map(vegas.QB_OVERLAP).fillna(0)
+    qb_week = np.where(has_line, df.qb_factor_week ** (1 - overlap), df.qb_factor_week)
+    df["game_factor"] = np.where(has_line, df.vegas, df.matchup)
+    df["week_proj"] = df.proj_ppg_healthy_qb * qb_week * df.game_factor * df.play_prob
 
     df["trend"] = np.select([df.l3_ppg > df.proj_ppg * 1.2, df.l3_ppg < df.proj_ppg * 0.8], ["up", "down"], "")
     df = df.drop(columns=[c for c in ["display_name", "latest_team", "headshot_x", "headshot_y",
@@ -561,18 +614,25 @@ RB1_MISS_RATE = 0.16     # 2023-25: RB1s missed 16% of games from week 5 on
 HANDCUFF_SHARE = 0.75    # 2023-25: the backup scored 70-87% of the starter's output when he sat
 
 
-def handcuffs(df: pd.DataFrame, fill_ins: list | None = None) -> pd.DataFrame:
+def handcuffs(df: pd.DataFrame, fill_ins: list | None = None, chart: pd.DataFrame | None = None) -> pd.DataFrame:
     """Tag each team's backup running back as the handcuff to its starter.
 
     Starter = the back with the most touches per game this season (history if none yet).
-    Handcuff = the next back, or whoever actually took over when the starter left a game.
+    Handcuff = whoever actually took over when the starter left a game; otherwise the next
+    back on the current depth chart (Ourlads/ESPN); otherwise the next back by touches.
     Each handcuff gets the points he'd score while filling in (75% of the starter's rate,
     or his own projection if higher) and the number of games the starter is expected to
     miss: games already on the injury report plus the normal 16% rate on the rest.
+
+    Next man up: when the starter is likely out THIS week, the handcuff's weekly projection
+    moves toward that fill-in rate in proportion to the chance the starter sits. (Measured:
+    2023-25 backups produced 75% of the starter's rate in the games he missed.) Tight ends
+    get the same "next man up" note from the depth chart, without the projection change,
+    since there is no comparable measurement for them.
     """
     df = df.copy()
-    for c in ("hc_of", "hc_of_name", "hc_contingent", "hc_out_games"):
-        df[c] = np.nan if c != "hc_of" and c != "hc_of_name" else None
+    for c in ("hc_of", "hc_of_name", "hc_contingent", "hc_out_games", "next_up_for"):
+        df[c] = np.nan if c in ("hc_contingent", "hc_out_games") else None
     fills = {f["injured_id"]: f["fill_in_id"] for f in (fill_ins or []) if f.get("position") == "RB"}
     rb = df[df.position == "RB"].copy()
     rb["tpg"] = (rb.touches.fillna(0) / rb.all_games.clip(lower=1)).where(rb.all_games.fillna(0) > 0,
@@ -583,16 +643,57 @@ def handcuffs(df: pd.DataFrame, fill_ins: list | None = None) -> pd.DataFrame:
             continue
         s1 = g.iloc[0]
         cand = g.iloc[1:]
+        cand_ids = set(cand.player_id)
+        hurt = set(cand[cand.exp_missed.fillna(0) >= 1].player_id)
         fid = fills.get(s1.player_id)
-        h = cand[cand.player_id == fid].iloc[0] if fid in set(cand.player_id) else cand.iloc[0]
-        if h.tpg < 1 and h.proj_ppg < 3:
+        dc = None
+        if chart is not None and len(chart):
+            from .depth import next_up
+            dc = next_up(chart, team, "RB", {s1.player_id} | hurt)
+        healthy_cand = cand[~cand.player_id.isin(hurt)]
+        if healthy_cand.empty:
+            continue
+        if fid in cand_ids and fid not in hurt:
+            h = cand[cand.player_id == fid].iloc[0]
+        elif dc in cand_ids:
+            h = cand[cand.player_id == dc].iloc[0]
+        else:
+            h = healthy_cand.iloc[0]
+        if h.tpg < 1 and h.proj_ppg < 3 and dc != h.player_id:
             continue  # no real backup identified
         healthy = max(float(s1.ros_games or 0), 0.0)
         out_games = float(s1.exp_missed or 0) + RB1_MISS_RATE * healthy
-        cont = max(float(h.proj_ppg), HANDCUFF_SHARE * float(s1.proj_ppg_healthy_qb if pd.notna(s1.get("proj_ppg_healthy_qb")) else s1.proj_ppg))
+        s1_rate = float(s1.proj_ppg_healthy_qb if pd.notna(s1.get("proj_ppg_healthy_qb")) else s1.proj_ppg)
+        cont = max(float(h.proj_ppg), HANDCUFF_SHARE * s1_rate)
         i = df.index[df.player_id == h.player_id][0]
         df.at[i, "hc_of"], df.at[i, "hc_of_name"] = s1.player_id, s1["name"]
         df.at[i, "hc_contingent"], df.at[i, "hc_out_games"] = round(cont, 2), round(out_games, 2)
+        # next man up this week
+        p_out = (1 - float(s1.play_prob or 0)) if bool(s1.get("plays_this_week", True)) else 0.0
+        backup_plays = bool(df.at[i, "plays_this_week"]) if "plays_this_week" in df else True
+        if p_out >= 0.25 and backup_plays:
+            wp = float(df.at[i, "week_proj"] or 0)
+            ratio = wp / float(df.at[i, "proj_ppg"]) if float(df.at[i, "proj_ppg"] or 0) > 0 else 1.0
+            fill = HANDCUFF_SHARE * s1_rate * ratio
+            if fill > wp:
+                df.at[i, "week_proj"] = round(wp + p_out * (fill - wp), 2)
+            if p_out >= 0.5:
+                df.at[i, "next_up_for"] = s1["name"]
+    # tight ends: depth-chart next man up when the starter is likely out (note only)
+    if chart is not None and len(chart):
+        from .depth import next_up
+        te = df[df.position == "TE"]
+        for team, g in te.groupby("team"):
+            c = chart[(chart.team == team) & (chart.pos == "TE")].sort_values("order")
+            if c.empty:
+                continue
+            starter = c.player_id.iloc[0]
+            srow = g[g.player_id == starter]
+            if srow.empty or float(srow.play_prob.iloc[0] or 0) > 0.5 or not bool(srow.plays_this_week.iloc[0]):
+                continue
+            nxt = next_up(chart, team, "TE", {starter} | set(g[g.exp_missed.fillna(0) >= 1].player_id))
+            if nxt in set(g.player_id):
+                df.loc[df.player_id == nxt, "next_up_for"] = srow["name"].iloc[0]
     return df
 
 

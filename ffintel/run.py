@@ -8,7 +8,7 @@ import traceback
 import numpy as np
 import pandas as pd
 
-from . import advisor, config, consensus, espn, injuries, model, report, sources, usage
+from . import advanced, advisor, config, consensus, depth, espn, injuries, model, report, sources, usage, vegas, web
 
 
 def log(*a):
@@ -45,10 +45,12 @@ PLAYER_COLS = ["player_id", "name", "position", "team", "age", "headshot", "game
                "carries", "rush_yds", "pass_yds", "pass_tds", "ints", "tds", "touches", "rz_targets",
                "ez_targets", "rz_carries", "i10_carries", "rz_tgt_share", "rz_rush_share", "xfp_total",
                "inj_status", "inj_detail", "inj_source", "inj_updated", "inj_signals", "fill_in_for", "play_prob", "on_bye", "exp_missed", "ros_games", "ros_points",
-               "qb", "qb_was", "qb_pass_ppg", "qb_factor", "qb_factor_week", "team_qb_factor", "qb_change", "qb_starter", "opponent", "matchup", "week_proj", "vor_ppg", "ros_value", "pos_rank", "ovr_rank",
+               "qb", "qb_was", "qb_pass_ppg", "qb_factor", "qb_factor_week", "team_qb_factor", "qb_change", "qb_starter", "opponent", "matchup", "imp_total", "imp_avg", "spread", "vegas", "game_factor", "week_proj", "vor_ppg", "ros_value", "pos_rank", "ovr_rank",
                "own_pos_rank", "consensus_pos_rank", "consensus_sources", "fp_ros", "fp_week", "espn_proj",
                "fp_ros_best", "fp_ros_worst", "market_ros_points", "value_gap", "gap_ppg", "rank_gap",
-               "verdict", "note", "star", "hc_of", "hc_of_name", "hc_contingent", "hc_out_games", "owner", "owner_name", "pct_owned", "pct_change"]
+               "verdict", "note", "star", "hc_of", "hc_of_name", "hc_contingent", "hc_out_games", "next_up_for",
+               "depth_label", "depth_source", "depth_move", "depth_dir", "route_pct", "routes_pg", "tprr", "yprr",
+               "fr_share", "separation", "slot_rate", "opp_share", "wopp_pg", "route_weeks", "adv_notes", "pp_url", "pp_updated", "owner", "owner_name", "pct_owned", "pct_change"]
 
 
 def main():
@@ -64,6 +66,11 @@ def main():
     cur_week, rem = model.remaining_schedule(sched, season)
     plan_week = rem["plan_week"]
     log(f"Current week {cur_week}; planning lineups for week {plan_week}")
+    try:
+        lines, _, lines_status = vegas.lines_for_week(sched, season, plan_week)
+    except Exception as e:
+        lines, lines_status = {}, f"unavailable ({type(e).__name__})"
+    log(f"Vegas lines: {lines_status}")
 
     league, league_error = None, ""
     if config.MOCK_LEAGUE:
@@ -107,6 +114,7 @@ def main():
     for label, fn in (("ESPN injury desk", lambda: injuries.espn_feed(espn_ids, nidx, game_dates)),
                       ("Sleeper", lambda: injuries.sleeper_feed(ids, nidx)),
                       ("ESPN news", lambda: injuries.news_feed(espn_ids, nidx)),
+                      ("Rotoworld (beat reporters)", lambda: injuries.rotoworld_feed(nidx)),
                       ("News wires", lambda: injuries.rss_feed(injuries.unique_names(players)))):
         try:
             got = fn()
@@ -119,9 +127,16 @@ def main():
     if league:
         sig += injuries.league_signals(league.injuries)
         feed_status["Your ESPN league"] = f"{len(league.injuries)} players"
-    df, meta = model.build_ratings(cur, hist, players, sched, inj, sig, short_games,
+    log("Reading depth charts")
+    try:
+        chart, depth_moves, depth_status = depth.build(season, nidx, players)
+    except Exception as e:
+        chart, depth_moves, depth_status = pd.DataFrame(), [], {"Depth charts": f"unavailable ({type(e).__name__})"}
+    log(f"  depth charts: {depth_status}; {len(depth_moves)} moves")
+    fp = consensus.fantasypros_ranks()
+    df, meta = model.build_ratings(cur, hist, players, sched, inj, sig, short_games, fp=fp,
                                    draft_ranks=league.draft_ranks if league else None,
-                                   drafted=league.drafted if league else None)
+                                   drafted=league.drafted if league else None, lines=lines)
     names = dict(zip(players.gsis_id, players.display_name))
     rated = dict(zip(df.player_id, df.proj_ppg))
     fill_ins = [f for f in fill_ins if f["injured_id"] in rated]
@@ -132,9 +147,40 @@ def main():
     teams = league.n_teams if league else config.DEFAULT_TEAMS
     lineup = league.lineup if league else config.DEFAULT_LINEUP
     df, repl = model.add_value(df, teams, lineup)
-    df = model.handcuffs(df, fill_ins)
+    df = model.handcuffs(df, fill_ins, chart)
+    # depth chart spot and recent moves
+    if len(chart):
+        spot = chart.drop_duplicates("player_id").set_index("player_id")
+        df["depth_label"] = df.player_id.map(spot.label)
+        df["depth_source"] = df.player_id.map(spot.source)
+    mv = {m["player_id"]: m for m in depth_moves}
+    df["depth_move"] = df.player_id.map(lambda p: f"{mv[p]['from']} → {mv[p]['to']}" if p in mv else None)
+    df["depth_dir"] = df.player_id.map(lambda p: mv[p]["direction"] if p in mv else None)
+    rated_ids = set(df.player_id)
+    depth_moves = [m for m in depth_moves if m["player_id"] in rated_ids]
     df = consensus.composite(df, league.projections if league else None)
     log(f"Rated {len(df)} players; {(df.verdict != '').sum()} flagged over/undervalued")
+
+    log("Advanced stats (PlayerProfiler)")
+    rostered = []
+    if league:
+        for entries in league.rosters.values():
+            rostered += [e["player_id"] for e in entries]
+    by_value = list(df.sort_values("ros_value", ascending=False).player_id)
+    owned = set(rostered)
+    free = [p for p in by_value if p not in owned][:60]
+    prio = list(dict.fromkeys([p for p in rostered if p in rated_ids] + free + by_value[:200]))
+    try:
+        adv = advanced.fetch(df, prio)
+    except Exception as e:
+        adv = {}
+        log("  PlayerProfiler unavailable:", e)
+    log(f"  advanced stats for {len(adv)} players")
+    for k in ("route_pct", "routes_pg", "tprr", "yprr", "fr_share", "separation", "slot_rate", "opp_share",
+              "wopp_pg", "pp_url", "pp_updated"):
+        df[k] = df.player_id.map(lambda p, k=k: adv.get(p, {}).get(k))
+    df["route_weeks"] = df.player_id.map(lambda p: adv.get(p, {}).get("route_weeks"))
+    df["adv_notes"] = [advanced.reasons(adv.get(p), pos) for p, pos in zip(df.player_id, df.position)]
 
     weeks_left = max(1, config.LAST_FANTASY_WEEK - plan_week + 1)
     out = {"generated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
@@ -143,6 +189,9 @@ def main():
            "data_through_week": int(cur.week.max()) if len(cur) else 0,
            "league": None, "league_error": league_error,
            "injury_feeds": feed_status, "fill_ins": fill_ins,
+           "depth_moves": depth_moves, "depth_status": depth_status,
+           "lines": {t: {k: v for k, v in ln.items()} for t, ln in lines.items()}, "lines_status": lines_status,
+           "web_status": web.summary(),
            "data_feeds": {k: v for k, v in sources.STATUS.items() if v != "ok"},
            "qb_changes": sorted(({"team": r.team, "qb": r.qb, "was": r.qb_was, "factor": r.team_qb_factor,
                                   "pass_ppg": r.qb_pass_ppg, "qb_id": r.player_id}

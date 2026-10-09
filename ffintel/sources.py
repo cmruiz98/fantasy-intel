@@ -127,3 +127,10 @@ def player_ids() -> pd.DataFrame:
 def fantasypros_ecr() -> pd.DataFrame:
     """FantasyPros expert consensus (itself an average of 100+ experts across sites)."""
     return _fetch("fpecr", [f"{DYNASTYPROCESS}/db_fpecr_latest.csv"], True)
+
+
+def depth_charts(season: int) -> pd.DataFrame:
+    """ESPN depth charts as snapshotted by nflverse (twice a day, with history)."""
+    return _fetch(f"depth_{season}",
+                  _variants(f"{NFLVERSE}/depth_charts/depth_charts_{season}", (".parquet", ".csv.gz", ".csv")),
+                  True, required=False)

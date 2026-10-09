@@ -31,7 +31,9 @@ def fantasypros_ranks() -> pd.DataFrame:
             columns={"ecr": label, "sd": f"{label}_sd", "best": f"{label}_best", "worst": f"{label}_worst",
                      "player_owned_espn": f"{label}_own", "scrape_date": f"{label}_date"})
         out.append(sub)
-    m = out[0].merge(out[1], on="id", how="outer")
+    dyn = e[e.page_type.isin(["dynasty-" + p for p in ("qb", "rb", "wr", "te")])][["id", "ecr"]].rename(
+        columns={"ecr": "fp_dyn"})
+    m = out[0].merge(out[1], on="id", how="outer").merge(dyn, on="id", how="outer")
     m = m.merge(ids, left_on="id", right_on="fantasypros_id").rename(columns={"gsis_id": "player_id"})
     return m.drop(columns=["id", "fantasypros_id"]).drop_duplicates("player_id")
 

@@ -31,3 +31,7 @@ DEFAULT_LINEUP = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1}
 LAST_FANTASY_WEEK = int(os.environ.get("FF_LAST_WEEK", "17"))
 
 POSITIONS = ["QB", "RB", "WR", "TE"]
+
+# Firecrawl (optional): only used when a site blocks a plain request from GitHub's servers.
+FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "").strip()
+FIRECRAWL_MONTHLY_BUDGET = int(os.environ.get("FIRECRAWL_MONTHLY_BUDGET", "800"))  # free plan has ~1,000

@@ -142,6 +142,9 @@ class Advisor:
         recent_work = (fa.touches.fillna(0) + fa.targets.fillna(0)) / fa.all_games.clip(lower=1)
         has_role = (fa.role_share.fillna(0) >= 0.3) | (recent_work >= 4)
         inherits = fa.fill_in_for.notna() | (fa.role_change == 1)
+        for c in ("next_up_for", "depth_dir"):
+            if c in fa:
+                inherits |= fa[c].notna() & (fa[c] != "down")  # next man up / promoted on the depth chart
         unseen = fa.all_games.fillna(0) == 0  # hasn't played yet: judged on history alone
         fa = fa[has_role | inherits | (unseen & fa.inj_status.isna())]
         # Players who won't play for a while are stashes, not this week's pickups.
@@ -172,6 +175,12 @@ class Advisor:
                 reasons.append(f"trending +{own[1]:.0f}% on ESPN")
             if r.get("verdict") == "Undervalued":
                 reasons.append("we rate him above consensus")
+            for note in (r.get("adv_notes") or [])[:2]:
+                reasons.append(note)
+            if r.get("depth_dir") == "up" and isinstance(r.get("depth_move"), str):
+                reasons.insert(0, f"moved up the depth chart ({r['depth_move']})")
+            if isinstance(r.get("next_up_for"), str):
+                reasons.insert(0, f"next man up with {r['next_up_for']} out")
             if isinstance(r.get("fill_in_for"), str):
                 reasons.insert(0, f"took over for injured {r['fill_in_for']}")
             if r.get("hc_of") and r.get("hc_of") in {x["player_id"] for x in mine}:
@@ -308,6 +317,13 @@ class Advisor:
         hc = [x for x in i["get"] if x.get("hc_of") in {r["player_id"] for r in i["my_new"]}]
         if hc:
             parts.append(f"{hc[0]['name']} is the handcuff to your {hc[0]['hc_of_name']}")
+        for x in i["get"]:
+            notes = list(x.get("adv_notes") or [])
+            if x.get("depth_dir") == "up" and isinstance(x.get("depth_move"), str):
+                notes.insert(0, f"just moved up the depth chart ({x['depth_move']})")
+            if notes:
+                parts.append(f"{x['name']}: {notes[0]}")
+                break
         if len(i["give"]) == 2:
             parts.append("you consolidate two pieces into one, so you'll have a roster spot to fill")
         elif len(i["get"]) == 2:

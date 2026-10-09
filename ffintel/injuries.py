@@ -63,7 +63,7 @@ def espn_json(url: str):
 # Expected games missed per status when nothing more specific is known
 BASE_GAMES = {"SEASON": 99.0, "IR": 4.0, "PUP": 4.0, "NFI": 4.0, "SUSPENSION": 2.0, "UNAVAILABLE": 2.0,
               "OUT": 1.0, "DOUBTFUL": 0.8, "LEFT GAME": 1.0, "INACTIVE": 0.6, "QUESTIONABLE": 0.25,
-              "DNP": 0.3, "SNAPS DOWN": 0.1, "RETURNED": 0.05, "NEWS": 0.0, "HEALTHY": 0.0}
+              "DNP": 0.3, "LIMITED": 0.1, "SNAPS DOWN": 0.1, "RETURNED": 0.05, "NEWS": 0.0, "HEALTHY": 0.0}
 SEVERITY = list(BASE_GAMES)  # most severe first
 
 
@@ -91,14 +91,36 @@ NEGATION = re.compile(r"(avoid|avoided|ruled out an?|no sign of|not an?|not (?:e
 POSITIVE = re.compile(r"\b(cleared|gained clearance|will play|expected to play|full(?:y)? participat|full practice|"
                       r"no injury designation|removed from (?:the )?injury report|activated|will suit up|suited up|"
                       r"returns? to practice fully|good to go|shed(?: the)? (?:questionable|doubtful)|"
-                      r"upgraded to (?:full|active))\b", re.I)
+                      r"upgraded to (?:full|active)|not on (?:the|his team's|[A-Z][a-z]+'s) (?:final )?injury report|"
+                      r"practiced (?:in )?full|full participant|without (?:an )?injury designation|"
+                      r"no (?:game )?designation|will start|is starting|expected to start|will be active|"
+                      r"should be able to go|has been activated)\b", re.I)
 MILD = re.compile(r"\b(minor|hop(?:es|eful|ing) to play|expects? to play|expected to play|optimistic|"
                   r"day[- ]to[- ]day|should be (?:ready|fine|good|available)|not (?:expected|believed) to (?:miss|be serious)|"
                   r"avoided (?:a )?(?:serious|major|significant|long[- ]term)|no structural damage|precaution(?:ary)?|"
-                  r"good chance (?:to|of) play|on track to play|trending toward playing|likely to play|"
+                  r"good chance (?:to|of) play|on track to play|trending toward (?:being able to )?play(?:ing)?|likely to play|"
+                  r"seen practicing|back at practice|returned to practice|"
                   r"nothing serious|isn't serious|not serious|won't miss|will not miss)\b", re.I)
+# (pattern, expected games out, label), checked against text that is about this player.
+# Timelines are typical recoveries for an NFL skill player; anything that ends a season
+# in practice is 99. A specific timeline in the text ("out 2-4 weeks") overrides these
+# whenever it is longer, and "avoided"/"no" negations and past-tense history are ignored.
+INJURY_TYPES = [
+    (r"\b(?:acl|anterior cruciate)\b(?![- ](?:sprain|scare))", 99.0, "ACL injury (season-ending)"),
+    (r"\bachilles\b(?! (?:tendinitis|tendonitis|soreness|tightness))", 99.0, "Achilles injury (season-ending)"),
+    (r"\b(?:torn|tore|ruptured?) (?:his )?(?:pec|pectoral|patellar|patella tendon|quad(?:riceps)? tendon)", 99.0, "tendon tear (season-ending)"),
+    (r"\blisfranc\b", 10.0, "Lisfranc injury"),
+    (r"\b(?:fractured?|broken) (?:leg|fibula|tibia|ankle|femur)\b|\b(?:leg|fibula|tibia|ankle) fracture", 8.0, "leg/ankle fracture"),
+    (r"\b(?:fractured?|broken) (?:collarbone|clavicle)|\b(?:collarbone|clavicle) fracture", 7.0, "collarbone fracture"),
+    (r"\btightrope\b", 6.0, "tightrope ankle surgery"),
+    (r"\b(?:torn|tore) (?:his )?meniscus|meniscus (?:surgery|repair)", 5.0, "meniscus surgery"),
+    (r"\bpcl\b", 4.0, "PCL injury"),
+    (r"\bmcl\b", 3.0, "MCL sprain"),
+    (r"\bturf toe\b", 3.0, "turf toe"),
+    (r"\bsports hernia|core muscle surgery", 4.0, "core muscle surgery"),
+]
 ABSENCE = re.compile(r"\b(will miss|expected to miss|set to miss|could miss|likely to miss|ruled out|won't play|will not play|"
-                     r"sidelined|shelved|placed [\w.' -]{0,30}?on (?:injured reserve|ir)|(?:landed|moved|headed) (?:on|to) (?:injured reserve|ir)|"
+                     r"sidelined|shelved|placed [\w.'()/ -]{0,45}?on (?:injured reserve|ir)|(?:landed|moved|headed) (?:on|to) (?:injured reserve|ir)|"
                      r"season[- ]ending|out for the (?:season|year)|out (?:for )?(?:\d+|one|two|three|four|five|six|several|multiple) weeks|"
                      r"week[- ]to[- ]week|undergo(?:ing)? surgery|will have surgery|(?:suffered|sustained) a (?:torn|fractured|broken))\b", re.I)
 # a timeline number only counts when the clause is about missing time
@@ -107,6 +129,32 @@ TIMELINE_CTX = re.compile(r"(miss|out\b|sidelined|shelved|recover|return|rehab|t
 HISTORY_CTX = re.compile(r"(offseason|last (?:year|season)|previous(?:ly)?|in the past|recovered from|returned from|"
                          r"back from|fully healed|a year ago|college)", re.I)
 NAME_RE = re.compile(r"\b[A-Z][a-z]+(?:['\-][A-Za-z]+)?\s+[A-Z][a-zA-Z.'\-]+\b")
+
+
+def _clip(sent: str, full_name: str) -> str:
+    """The part of one sentence that is about this player.
+
+    "Coach Ben Johnson said Swift will play" -> "Swift will play" (a name before him is
+    attribution or a teammate: start at him). "Jefferson is fine, but Addison will miss
+    two weeks" -> "Jefferson is fine, but " (a name after him starts someone else's news).
+    """
+    last = full_name.split()[-1]
+    low, at = sent.lower(), -1
+    for key in (full_name.lower(), last.lower()):
+        at = low.find(key)
+        if at >= 0:
+            break
+    if at < 0:
+        at = 0
+    def other(m):
+        n = m.group(0)
+        return last.lower() not in n.lower() and full_name.lower() not in n.lower() and \
+            not re.match(r"(Week|Thursday|Friday|Sunday|Monday|Wednesday|Tuesday|Saturday|NFL Network|ESPN)\b", n)
+    before = [m for m in NAME_RE.finditer(sent) if m.end() <= at and other(m)]
+    after = [m.start() for m in NAME_RE.finditer(sent) if m.start() > at and other(m)]
+    start = at if before else 0
+    end = min(after) if after else len(sent)
+    return sent[start:end]
 
 
 def about_player(text: str, full_name: str) -> str:
@@ -123,12 +171,8 @@ def about_player(text: str, full_name: str) -> str:
     for sent in re.split(r"(?<=[.!?])\s+", text):
         if last.lower() not in sent.lower():
             continue
-        others = [n for n in NAME_RE.findall(sent) if last not in n and full_name not in n]
-        if others:  # trim the sentence where it starts talking about someone else
-            cut = min(sent.find(n) for n in others)
-            sent = sent[:cut]
-        kept.append(sent)
-    return " ".join(kept)
+        kept.append(_clip(sent, full_name))
+    return " ".join(k for k in kept if k.strip())
 
 
 def _neg(text, start):
@@ -150,7 +194,8 @@ def text_severity(text: str) -> tuple[float, str] | None:
         nonlocal best
         if m is not None and _neg(t, m.start()):
             return
-        if m is not None and HISTORY_CTX.search(clause(m)):
+        after = re.split(r"[.;!?]", t[m.end():m.end() + 45])[0] if m is not None else ""
+        if m is not None and (HISTORY_CTX.search(clause(m)) or HISTORY_CTX.search(after)):
             return  # "had offseason surgery", "returned from a torn ACL last year"
         if need_ctx and m is not None and not TIMELINE_CTX.search(clause(m) + t[m.end():m.end() + 25]):
             return  # "over the past two weeks" is a stat line, not a timeline
@@ -158,11 +203,17 @@ def text_severity(text: str) -> tuple[float, str] | None:
             best = (g, label)
 
     for pat in (r"season[- ]ending", r"out for the (?:season|year|rest of the season)", r"torn (?:acl|achilles)",
-                r"(?:acl|achilles) (?:tear|rupture)", r"ruptured", r"broken (?:leg|fibula|tibia)"):
+                r"(?:acl|achilles) (?:tear|rupture)", r"ruptured achilles"):
         m = re.search(pat, t)
         if m:
             take(99.0, "season-ending", m)
-    m = re.search(r"placed [\w.' -]{0,30}?on (?:injured reserve|ir)\b|(?:landed|moved|headed) (?:on|to) (?:injured reserve|ir)\b|\bon injured reserve\b", t)
+    # Injury types with well-known recovery times. Feeds often give only the body part and
+    # procedure ("Knee - ACL: Surgery"), never the words "season-ending".
+    for pat, g, label in INJURY_TYPES:
+        m = re.search(pat, t)
+        if m:
+            take(g, label, m)
+    m = re.search(r"placed [\w.'()/ -]{0,45}?on (?:injured reserve|ir)\b|(?:landed|moved|headed) (?:on|to) (?:injured reserve|ir)\b|\bon injured reserve\b", t)
     if m:
         take(4.0, "injured reserve", m)
     spans = []
@@ -366,25 +417,46 @@ def roster_signals(players: pd.DataFrame, played_last: set) -> list[Signal]:
 
 
 def report_signals(inj: pd.DataFrame, report_dates: dict) -> list[Signal]:
-    """Latest official report per player, plus practice participation."""
+    """Latest official report per player, plus practice participation.
+
+    Teams file practice participation Wednesday-Thursday and game designations (Out,
+    Doubtful, Questionable) with Friday's final report. Until a team's final report is in
+    the data, "limited" or "no game status" means nothing has been decided yet. It is NOT a
+    clean bill of health, and a fresher designation from beat reporters or ESPN must win.
+    """
     out = []
     if inj.empty:
         return out
+    final_filed = set(map(tuple, inj[inj.report_status.notna()][["team", "week"]].drop_duplicates().values.tolist()))
     latest = inj.sort_values("week").groupby("gsis_id").tail(1)
     for r in latest.itertuples(index=False):
         injury = r.report_primary_injury if pd.notna(r.report_primary_injury) else r.practice_primary_injury
         when = report_dates.get((r.team, int(r.week)), "")
+        practice_when = ""
+        if when:  # practice-only reports come out a day or two before the final report
+            practice_when = (pd.Timestamp(when) - pd.Timedelta(hours=22)).isoformat()
         st = str(r.report_status).upper() if pd.notna(r.report_status) else ""
         practice = str(r.practice_status) if pd.notna(r.practice_status) else ""
+        final = (r.team, r.week) in final_filed
         if st in BASE_GAMES:
             out.append(Signal(r.gsis_id, st, BASE_GAMES[st], f"{injury}: {st.title()} for week {r.week}"
                               + (f" ({practice.lower()})" if practice else ""), "Official injury report", when, int(r.week)))
+        elif final and practice:
+            # on the final report with no game designation: he's playing
+            out.append(Signal(r.gsis_id, "HEALTHY", 0.0, f"{injury}: {practice.lower()}, no game designation (week {r.week})",
+                              "Official injury report", when, int(r.week), positive=True))
         elif "Did Not" in practice and "Not injury" not in str(injury):
             out.append(Signal(r.gsis_id, "DNP", BASE_GAMES["DNP"], f"{injury}: did not practice (week {r.week})",
-                              "Practice report", when, int(r.week)))
-        elif "Full" in practice or (practice and not st):
-            out.append(Signal(r.gsis_id, "HEALTHY", 0.0, f"{injury}: {practice.lower() or 'no game status'} (week {r.week})",
-                              "Official injury report", when, int(r.week), positive=True))
+                              "Practice report", practice_when, int(r.week)))
+        elif "Not injury" in str(injury):
+            continue  # rest days aren't injuries
+        elif "Full" in practice:
+            out.append(Signal(r.gsis_id, "HEALTHY", 0.0, f"{injury}: full practice (week {r.week})",
+                              "Practice report", practice_when, int(r.week), positive=True))
+        elif "Limited" in practice:
+            out.append(Signal(r.gsis_id, "LIMITED", BASE_GAMES["LIMITED"], f"{injury}: limited in practice (week {r.week}); "
+                              "game status comes with Friday's final report", "Practice report", practice_when,
+                              int(r.week), mild=True))
     return out
 
 
@@ -453,6 +525,8 @@ def espn_feed(espn_idmap: dict, nidx: dict, game_dates: dict) -> list[Signal]:
             body = " ".join(str(details.get(k, "")) for k in ("side", "type", "detail") if details.get(k)).strip()
             comment = it.get("longComment") or it.get("shortComment") or ""
             mine = about_player(comment, ath.get("displayName", ""))
+            if status and body:  # ESPN's structured injury fields ("Knee", "ACL", "Surgery") describe him
+                mine = f"{body}. {mine}"
             games = BASE_GAMES.get(status, 0.0) if status else 0.0
             sev = text_severity(mine)  # only what the blurb says about HIM
             absence = bool(ABSENCE.search(mine))
@@ -507,7 +581,8 @@ def sleeper_feed(ids: pd.DataFrame, nidx: dict) -> list[Signal]:
             continue
         notes = p.get("injury_notes") or ""
         games = BASE_GAMES.get(status, 0.0)
-        sev = text_severity(notes)
+        body_txt = " ".join(str(p.get(k) or "") for k in ("injury_body_part", "injury_notes"))
+        sev = text_severity(body_txt)
         if sev and sev[0] > games:
             games = sev[0]
         mild = bool(MILD.search(notes)) and games < 1.5
@@ -541,25 +616,148 @@ def news_feed(espn_idmap: dict, nidx: dict) -> list[Signal]:
             pid = espn_idmap.get(int(c.get("athleteId", 0) or 0)) or nidx.get((_norm(c.get("description", "")), None))
             if not pid:
                 continue
-            sev = text_severity(text)
-            pos = bool(POSITIVE.search(text))
+            mine = about_player(text, c.get("description", "")) if c.get("description") else text
+            if not mine.strip():
+                continue
+            sev = text_severity(mine)
+            pos = bool(POSITIVE.search(mine)) and not sev
             games = sev[0] if sev else 0.0
-            mild = bool(MILD.search(text)) and games < 1.5
+            mild = bool(MILD.search(mine)) and games < 1.5
             if games < 0.3 and not pos and not mild:
                 continue  # mentions an injury topic but says nothing about him missing time
             if mild:
                 games = min(games, 0.3) if games else 0.25
             label = "SEASON" if games >= 99 else ("NEWS" if games < 0.3 else ("OUT" if games >= 1 else "QUESTIONABLE"))
             out.append(Signal(pid, label, games, a.get("headline", "")[:200], "ESPN news", pub,
-                              positive=pos and not sev, mild=mild, designated=False,
-                              absence=bool(ABSENCE.search(text)),
-                              timeline=bool(ABSENCE.search(text)) and games >= 1 and not mild))
+                              positive=pos, mild=mild, designated=False,
+                              absence=bool(ABSENCE.search(mine)),
+                              timeline=bool(ABSENCE.search(mine)) and games >= 1 and not mild))
     return out
 
 
 INJURY_WORDS = re.compile(r"injur|hurt|ankle|knee|hamstring|groin|concussion|mri|surgery|out for|ruled out|"
                           r"week-to-week|\bir\b|injured reserve|torn|sprain|strain|fracture|questionable|doubtful|"
                           r"cleared|activated|return", re.I)
+
+
+ROTOWORLD = "https://www.nbcsports.com/fantasy/football/player-news"
+ROTO_PAGES = 8   # 10 blurbs a page; 8 pages cover about the last day
+ROTO_TEAM = {"LAR": "LA", "WSH": "WAS", "JAC": "JAX", "ARZ": "ARI", "NOR": "NO", "GBP": "GB", "KCC": "KC",
+             "NEP": "NE", "SFO": "SF", "TBB": "TB", "LVR": "LV"}
+DESIGNATED = re.compile(r"\b(?:is|was|been|remains|listed as|considered|labeled) (?:officially )?(?:questionable|doubtful|out)\b|"
+                        r"\bruled out\b|placed [\w.'()/ -]{0,45}?on (?:injured reserve|ir)\b|\bdid not practice\b|"
+                        r"\bdnp\b|\bsat out practice\b|\bmissed practice\b|\blimited (?:in |at )?practice\b|"
+                        r"\blogged a limited\b|\binactive\b|\bwill not play\b|\bwon't play\b|\bwill miss\b", re.I)
+PRACTICE_DNP = re.compile(r"\b(did not practice|dnp|sat out practice|missed practice|no practice)\b", re.I)
+PRACTICE_LTD = re.compile(r"\b(limited (?:in |at )?practice|logged a limited|limited session|limited participant|was limited|"
+                          r"limited (?:on|in) (?:mon|tues|wednes|thurs|fri|satur|sun)day)\b", re.I)
+
+
+def _subject_text(text: str, full_name: str) -> str:
+    """Sentences of a single-player blurb that are about him: his name or a leading he/his,
+    cut off where another player's name starts."""
+    last = full_name.split()[-1].lower() if full_name else ""
+    kept = []
+    for sent in re.split(r"(?<=[.!?])\s+", text or ""):
+        low = sent.lower()
+        if last not in low and not re.match(r"(he|his|him)\b", low):
+            continue
+        kept.append(_clip(sent, full_name))
+    return " ".join(kept)
+
+
+def rotoworld_feed(nidx: dict) -> list[Signal]:
+    """Rotoworld/NBC player news: blurbs written from beat reporters, coaches' press
+    conferences and practice reports, usually within minutes. Each blurb is about one
+    player and cites the reporter. Fetched free; Firecrawl only if NBC blocks us."""
+    from bs4 import BeautifulSoup
+    from . import web
+
+    out, seen = [], set()
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
+    pages_ok = 0
+    for n in range(1, ROTO_PAGES + 1):
+        url = ROTOWORLD if n == 1 else f"{ROTOWORLD}?p={n}"
+        html = web.get_html(f"rotoworld_p{n}", url, "Rotoworld news", max_age_h=1.5 if n <= 3 else 4,
+                            valid=lambda h: "PlayerNewsPost-headline" in h,
+                            priority="normal" if n == 1 else "low", fc_every_h=3 if n == 1 else 8,
+                            stale_days=1, category=f"rotoworld{n}",
+                            category_cap=None if n <= 3 else 0)  # pages 4-8: free fetch only
+        if html is None:
+            if n == 1:
+                raise RuntimeError("NBC player news unreachable")
+            break
+        pages_ok += 1
+        for p in BeautifulSoup(html, "lxml").select("div.PlayerNewsPost"):
+            def txt(sel):
+                el = p.select_one(sel)
+                return el.get_text(" ", strip=True) if el else ""
+            first, last = txt(".PlayerNewsPost-firstName"), txt(".PlayerNewsPost-lastName")
+            name = f"{first} {last}".strip() or txt(".PlayerNewsPost-name")
+            team = txt(".PlayerNewsPost-team-abbr")
+            team = ROTO_TEAM.get(team, team)
+            head, body = txt(".PlayerNewsPost-headline"), txt(".PlayerNewsPost-analysis")
+            kind = txt(".PlayerNewsPost-type")
+            d = p.select_one(".PlayerNewsPost-date")
+            when = d.get("data-date") if d is not None else ""
+            src = p.select_one(".PlayerNewsPost-source a")
+            reporter = src.get_text(" ", strip=True) if src is not None else ""
+            key = (name, head)
+            if not name or not head or key in seen:
+                continue
+            seen.add(key)
+            try:
+                if pd.Timestamp(when) < cutoff:
+                    continue
+            except Exception:
+                pass
+            pid = nidx.get((_norm(name), team)) or nidx.get((_norm(name), None))
+            if not pid:
+                continue
+            text = f"{head} {body}"
+            mine = _subject_text(text, name)
+            if kind not in ("Injury", "Transaction") and not INJURY_WORDS.search(mine):
+                continue
+            hmine = _subject_text(head, name) or head
+            sev = text_severity(mine)
+            positive = bool(POSITIVE.search(hmine)) or (bool(POSITIVE.search(mine)) and not sev)
+            mild = bool(MILD.search(mine)) and not positive
+            designated = bool(DESIGNATED.search(hmine))
+            absence = bool(ABSENCE.search(mine))
+            games = sev[0] if sev else 0.0
+            low = hmine.lower()
+            if re.search(r"\bruled out\b|\bis out\b|will not play|won't play|will miss|\binactive\b", low):
+                status, games = ("OUT", max(games, 1.0))
+            elif "doubtful" in low:
+                status, games = "DOUBTFUL", max(games, 0.8)
+            elif "questionable" in low:
+                status, games = "QUESTIONABLE", max(games, 0.25)
+            elif re.search(r"(injured reserve|\bir\b)", low) and re.search(r"placed|landed|moved|headed|to ir|on ir", low) \
+                    and not POSITIVE.search(low):
+                status, games = "IR", max(games, 4.0)
+            elif PRACTICE_DNP.search(hmine):
+                status, games = "DNP", max(games, 0.3)
+            elif PRACTICE_LTD.search(hmine):
+                status, games = "QUESTIONABLE", max(min(games, 0.3), 0.15)
+                mild = True
+            else:
+                status = None  # nothing explicit in the headline: label from the text below
+            if positive:
+                status, games = "NEWS", 0.0
+            elif mild and games < 1.5:
+                games = min(games, 0.3) if games else 0.25
+            if status is None:
+                status = "SEASON" if games >= 99 else "OUT" if games >= 1 else "QUESTIONABLE" if games >= 0.25 else "NEWS"
+            if games <= 0 and not positive and not mild:
+                continue
+            detail = head + (f" (via {reporter})" if reporter else "")
+            wk = re.search(r"\bWeek (\d{1,2})\b", head)
+            week = int(wk.group(1)) if wk and status in ("OUT", "DOUBTFUL", "QUESTIONABLE") \
+                and not re.search(r"to return|return to", head, re.I) else None  # in-game updates aren't a game call
+            out.append(Signal(pid, status, games, detail[:240], "Rotoworld (beat reporters)", when, week,
+                              positive=positive, mild=mild, designated=designated or positive,
+                              absence=absence, timeline=absence and games >= 1 and not mild))
+    return out
 
 
 def unique_names(players: pd.DataFrame, positions=("QB", "RB", "WR", "TE")) -> dict:
@@ -644,12 +842,12 @@ def _ts(s):
 
 OFFICIAL = ("Official injury report", "Practice report")
 LONG_STATUSES = {"SEASON", "IR", "PUP", "NFI", "SUSPENSION", "UNAVAILABLE"}
-GAME_STATUSES = {"OUT", "DOUBTFUL", "QUESTIONABLE", "DNP", "LEFT GAME", "INACTIVE", "SNAPS DOWN"}
+GAME_STATUSES = {"OUT", "DOUBTFUL", "QUESTIONABLE", "DNP", "LIMITED", "LEFT GAME", "INACTIVE", "SNAPS DOWN"}
 # Chance he misses the NEXT game when a live feed still shows a status but this week's
 # official report is not out yet. Early in the week that status usually describes the game
 # just played, and most players listed "Out" for one game are back within a week or two.
 PENDING_P = {"OUT": 0.55, "DOUBTFUL": 0.4, "QUESTIONABLE": 0.2, "LEFT GAME": 0.5, "INACTIVE": 0.45,
-             "DNP": 0.3, "SNAPS DOWN": 0.1}
+             "DNP": 0.3, "LIMITED": 0.1, "SNAPS DOWN": 0.1}
 REPORT_P = {"OUT": 1.0, "DOUBTFUL": 0.8, "QUESTIONABLE": 0.25, "DNP": 0.3}
 
 
@@ -695,14 +893,17 @@ def combine(signals: list[Signal], report_weeks: dict, player_team: dict, last_p
             continue
 
         report_filed = plan_week is not None and practice_weeks.get(team, 0) >= plan_week
-        this_week = [s for s in live if s.source in OFFICIAL and s.week == plan_week]
+        # only the FINAL report (game designations) is the last word; practice participation
+        # earlier in the week competes on recency with beat reporters and ESPN
+        this_week = [s for s in live if s.source == "Official injury report" and s.week == plan_week]
+        practice_now = [s for s in live if s.source == "Practice report" and s.week == plan_week]
         past_official = [s for s in live if s.source in OFFICIAL and s.week is not None
                          and (plan_week is None or s.week < plan_week) and s.games > 0]
         good = [s for s in live if (s.positive or s.mild) and _ts(s.when) is not None]
         newest_good = max(good, key=lambda s: _ts(s.when)) if good else None
         long = [s for s in live if (s.games >= 1.5 or s.status in LONG_STATUSES or (s.timeline and s.games >= 1))
                 and not s.mild]
-        short = [s for s in live if s not in long and s.source not in OFFICIAL
+        short = [s for s in live if s not in long and (s.source not in OFFICIAL or s in practice_now)
                  and s.status in GAME_STATUSES and s.games > 0]
 
         # --- 2. multi-week
@@ -718,23 +919,35 @@ def combine(signals: list[Signal], report_weeks: dict, player_team: dict, last_p
         if this_week:
             head = max(this_week, key=lambda s: REPORT_P.get(s.status, 0))
             p = 0.0 if head.positive else REPORT_P.get(head.status, head.p_miss if head.p_miss is not None else min(head.games, 1))
-        elif report_filed and not past_official:
+        elif report_filed and not past_official and not practice_now:
             p, head = 0.0, None  # team filed this week's report and he is not on it: he's fine
         else:
             cands = short + past_official
+            # a dated call on THIS week's game ("questionable for Week 5") beats feeds that only
+            # carry a current status with no date of their own
+            calls = [s for s in cands if s.source not in OFFICIAL and s.week is not None and s.week == plan_week
+                     and s.week > tlw and s.status in ("OUT", "DOUBTFUL", "QUESTIONABLE")]
+            if calls:
+                cands = calls
             if cands:
                 head = max(cands, key=lambda s: (_ts(s.when) or pd.Timestamp(0, tz="UTC"), s.games))
-                p = head.p_miss if head.status == "LEFT GAME" and head.p_miss is not None \
-                    else PENDING_P.get(head.status, min(head.games, 1.0))
-                if head.source in OFFICIAL:  # he sat out the last game with this
+                game_call = head.source not in OFFICIAL and head.week is not None and head.week == plan_week \
+                    and head.week > tlw and head.status in ("OUT", "DOUBTFUL", "QUESTIONABLE")
+                if head.status == "LEFT GAME" and head.p_miss is not None:
+                    p = head.p_miss
+                elif game_call:  # "ruled out for Week 5" / "questionable for Week 5": a call on THIS game
+                    p = REPORT_P[head.status]
+                else:
+                    p = PENDING_P.get(head.status, min(head.games, 1.0))
+                if head in past_official:  # he sat out the last game with this
                     p = 0.6 if last_played.get(pid, 0) < (head.week or 0) else p
-                note = " This week's injury report is not out yet."
+                note = "" if game_call else " This week's final injury report is not out yet."
             else:
                 p = 0.0
             if newest_good is not None and (head is None or (_ts(head.when) or pd.Timestamp(0, tz="UTC"))
                                             <= _ts(newest_good.when)):
                 cap = 0.1 if newest_good.positive else 0.3
-                if p > cap or head is None:
+                if p > cap or head is None or (newest_good.positive and p >= cap):
                     p, head, note = min(p, cap) if head else (0.0 if newest_good.positive else 0.25), \
                         newest_good, ""
         if lt >= 1:
@@ -747,7 +960,9 @@ def combine(signals: list[Signal], report_weeks: dict, player_team: dict, last_p
             top = newest_good or live[0]
         status = top.status
         if top is newest_good and newest_good is not None:
-            status = "CLEARED" if newest_good.positive else "QUESTIONABLE"
+            status = "CLEARED" if newest_good.positive else ("LIMITED" if newest_good.status == "LIMITED" else "QUESTIONABLE")
+        elif lt >= 1 and status in ("QUESTIONABLE", "DOUBTFUL", "LIMITED", "DNP", "TBD"):
+            status = "OUT"  # the text behind a game-day tag says he'll miss time
         elif (top in short or top in past_official) and not this_week and lt < 1 \
                 and top.status in ("OUT", "DOUBTFUL", "INACTIVE") and p < 0.8:
             status = "TBD"  # last game's status; this week's is not known yet
