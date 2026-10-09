@@ -257,7 +257,8 @@ const views={
   <div class="card"><h2>Every injury status</h2><p class="sub">The most serious current signal wins; tap a player to see every source. Stale info is dropped automatically (e.g. last week's "Questionable" once he's played, or an in-game injury once the next official report is out).</p>${table(all,[...cols.slice(0,1),{k:'inj_status',h:'Status',l:1,f:x=>inj(x)},...cols.slice(1)],{})}</div>
   ${qbc.length?`<div class="card"><h2>Quarterback changes</h2><p class="sub">When a starting QB goes down, his pass catchers lose value too. The backup is rated on his own history, and everyone who catches passes from him is adjusted by the gap.</p>
   ${qbc.map(q=>`<div style="padding:6px 0;border-bottom:1px dashed var(--line)"><b>${esc(q.team)}</b>: ${esc(q.qb)} in for ${esc(q.was)} <span class="mute">(${f1(q.pass_ppg)} passing pts/start)</span> · <b class="${q.factor<1?'bad':'good'}">${sgn((q.factor-1)*100)}%</b> <span class="mute">for his receivers</span></div>`).join('')}</div>`:''}
-  <div class="card"><h2>Sources this update</h2><p>${feeds}</p></div>`;
+  <div class="card"><h2>Sources this update</h2><p>${feeds}</p>
+  ${Object.keys(D.data_feeds||{}).length?`<p class="sub" style="margin-top:8px">Core data fallbacks: ${Object.entries(D.data_feeds).map(([k,v])=>`<span class="tag ${/last saved|unavailable/.test(v)?'I':'S'}" style="margin:2px">${esc(k)}: ${esc(v)}</span>`).join(' ')}</p>`:''}</div>`;
  },
  analyzer(){
   if(!L)return noLeague();

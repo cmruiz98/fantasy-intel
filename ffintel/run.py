@@ -143,6 +143,7 @@ def main():
            "data_through_week": int(cur.week.max()) if len(cur) else 0,
            "league": None, "league_error": league_error,
            "injury_feeds": feed_status, "fill_ins": fill_ins,
+           "data_feeds": {k: v for k, v in sources.STATUS.items() if v != "ok"},
            "qb_changes": sorted(({"team": r.team, "qb": r.qb, "was": r.qb_was, "factor": r.team_qb_factor,
                                   "pass_ppg": r.qb_pass_ppg, "qb_id": r.player_id}
                                  for r in df[df.qb_change & (df.position == "QB") & df.qb_starter].itertuples()),
