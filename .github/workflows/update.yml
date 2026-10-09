@@ -43,6 +43,7 @@ jobs:
           ESPN_S2: ${{ secrets.ESPN_S2 }}
           ESPN_SWID: ${{ secrets.ESPN_SWID }}
           ESPN_TEAM_ID: ${{ secrets.ESPN_TEAM_ID }}
+          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
         run: python -m ffintel.run
 
       - uses: actions/upload-pages-artifact@v3
