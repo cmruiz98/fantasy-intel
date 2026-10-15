@@ -307,8 +307,8 @@ const views={
   <h3>8. Market vs. us</h3><p>The consensus rating is a weighted average of FantasyPros rest-of-season consensus (60%, itself 100+ experts), ESPN's projections (25%) and FantasyPros weekly consensus (15%). Each consensus rank is turned into points using our own projection curve, so the gap is in real points. "Undervalued/Overvalued" needs a gap of at least 1.5 points per game and a meaningful rank difference. <b>Star guardrail:</b> a proven star can't be called overvalued unless something structural changed (injury, lost snaps, new team).</p>
   <h3>9. Who is throwing the ball</h3><p>Each team's reference quarterback is the intended starter: whoever opened the season, unless he has since been healthy and benched. Every quarterback is graded on passing points per start only (his own rushing does nothing for his receivers), blending his history with this season. When the intended starter is out, his receivers move by (backup ÷ starter)<sup>0.55</sup>. That exponent was measured from every backup start in 2023-25: top receivers keep about 84% of their output with a backup at 70% of the starter's passing quality, and about 74% with a much worse one. The adjustment is capped between −40% and +12%, and it is always relative to the starter, so it is exactly zero when he plays. Next week uses the chance the starter misses that game; rest of season uses the share of remaining games he is expected to miss. Tight ends take 90% of the adjustment and running backs 35%. A backup who inherits the job stops being judged by his old bench role, so his own projection reflects starting.</p>
   <h3>10. Handcuffs</h3><p>Each team's backup running back is tagged as the handcuff to its starter: whoever actually took over when the starter left a game, otherwise the next healthy back on the current depth chart, otherwise the next back by workload. When the starter is likely out <i>this</i> week, the handcuff's weekly projection moves toward that fill-in rate in proportion to the chance the starter sits, and he is flagged "next man up" (tight ends get the flag from the depth chart too, without the projection change, since there is no comparable measurement for them). Measured over 2023-25: RB1s miss about 16% of games, and when they do, the backup scores 70-87% of the starter's output. So a handcuff is worth his fill-in rate times the games his starter is expected to miss (current injuries plus that normal rate). Who owns him matters: if you also own the starter, he fills <i>your</i> hole, so he is measured against your next-best bench option; if you don't, he only counts when his fill-in rate would beat your weakest starter. That insurance is part of every team's value in waivers (a handcuff to your own starter is never suggested as a drop), the trade ideas and the trade analyzer.</p>
-  <h3>11. Trade ideas</h3><p>Every 1-for-1, 2-for-1 and 1-for-2 swap with every team is scored by what it does to <b>both</b> teams' best lineups plus handcuff insurance, not by player values in isolation, so a player is only worth what he adds to the lineup that team would actually field. An idea is shown only if it improves your team by our numbers and does not weaken their lineup by consensus projections (how they will judge it). Packages with a pointless throw-in are dropped. Ideas that fill a weak spot on both sides rank first, and the trade partners table shows each team's position ranks and whether their bench can fix your needs and vice versa. The trade analyzer runs exactly the same math, so opening an idea there gives identical numbers.</p>
-  <h3>12. Trade analyzer</h3><p>Pick any two teams and any set of players. For each side it rebuilds that team's best starting lineup before and after the trade, so a player only counts for what he adds to the lineup you would actually field: a third good running back is worth much less than a first one. It adds a small credit for bench depth, notes which lineup slots move, and counts roster spots gained or lost in an uneven package. Then it re-runs the whole calculation using consensus ranks instead of ours, which approximates how the other manager sees the deal, and that gap is what tells you whether an offer is likely to be accepted.</p>
+  <h3>11. Trade ideas</h3><p>Every 1-for-1, 2-for-1 and 1-for-2 swap with every team is scored by what it does to <b>both</b> teams' best lineups, set separately for every remaining week and added up, plus handcuff insurance. Week by week matters: a player on bye or hurt in a given week scores nothing that week and your best bench option starts instead, so depth that covers byes gets credit and a star on bye this week isn't written off. This uses next week's projections for next week and rest-of-season rates after that, not by player values in isolation, so a player is only worth what he adds to the lineup that team would actually field. An idea is shown only if it improves your team by our numbers and does not weaken their lineup by consensus projections (how they will judge it). Packages with a pointless throw-in are dropped. Ideas that fill a weak spot on both sides rank first, and the trade partners table shows each team's position ranks and whether their bench can fix your needs and vice versa. The trade analyzer runs exactly the same math, so opening an idea there gives identical numbers.</p>
+  <h3>12. Trade analyzer</h3><p>Pick any two teams and any set of players. For each side it rebuilds that team's best starting lineup before and after the trade for every remaining week, so a player only counts for what he adds to the lineup you would actually field: a third good running back is worth much less than a first one. It shows next week and the rest of the season separately, with a bar for each week. They can disagree: trading away a player who is on bye next week makes next week's lineup look better (he'd score zero anyway), while the season total counts the weeks he's back. When that happens the analyzer says which player and why. The "rosters after the trade" lineups are next week only. It adds a small credit for bench depth, notes which lineup slots move, and counts roster spots gained or lost in an uneven package. Then it re-runs the whole calculation using consensus ranks instead of ours, which approximates how the other manager sees the deal, and that gap is what tells you whether an offer is likely to be accepted.</p>
   <h3>13. Depth charts</h3><p>Two sources: Ourlads (all 32 teams on one page, maintained by hand and updated after each game and on transactions), and ESPN's depth charts as snapshotted twice a day by nflverse. Ourlads is used when its team page was updated in the last 10 days, ESPN otherwise. A "move" is measured within one source only (Ourlads now vs its own copy from 3-10 days ago; ESPN now vs a week ago), because the two often list backups in a different order, and comparing them would invent promotions; a move is shown only if the current chart agrees. Moves appear on the Injuries tab, in player details, and as a waiver reason, and a promoted backup can clear the waiver floor before his snaps catch up. Depth charts decide who the handcuff is; they don't change projections directly (there is no clean history to measure how much a depth-chart move is worth).</p>
   <h3>14. Advanced stats</h3><p>From PlayerProfiler's free player pages: routes run and route participation (share of team dropbacks he ran a route on), targets and yards per route run, first-read target share, separation, slot rate, and for backs opportunity share and weighted opportunities. They are shown in player details and the Rankings "Advanced" view, and used in waiver and trade explanations ("routes up: 88% of dropbacks the last two games, was 60%"). They do not change projections: they exist only for this season, so there is no history to measure how much weight they deserve, and snaps, targets and expected points already capture most of a role. Pages refresh about weekly (PlayerProfiler updates advanced numbers mid-week), rostered players and top free agents first.</p>
   <h3>15. Where the web data comes from</h3><p>Every page (Ourlads, Rotoworld, PlayerProfiler, ESPN) is first requested directly, which is free. Some sites block cloud servers like GitHub's; for those, the page is fetched through <b>Firecrawl</b> (a real browser service) if a FIRECRAWL_API_KEY secret is set. Firecrawl use is metered: one credit per page, a monthly cap (800 of the free plan's 1,000 by default), at most 40 a run, low-priority pages only while most of the month's budget is left, and PlayerProfiler capped at 200 a month. If both routes fail, the last good copy is used for a few days. The Sources card on the Injuries tab shows how each page arrived and the month's Firecrawl usage.</p>
@@ -454,6 +454,14 @@ function hcBonus(rows,val){
   return {ppw:tot/WKS,notes};
 }
 const teamValue=(rows,val)=>lineup(rows,val).total+hcBonus(rows,val).ppw;
+// The best lineup set separately for every remaining week (same as advisor.season_lineup):
+// byes and injury weeks are covered by the bench, and a player on bye this week still counts later.
+function seasonLineup(rows,key){
+  const n=Math.max(0,...rows.map(r=>(r[key]||[]).length)); if(!n)return {avg:0,weekly:[]};
+  const weekly=[];for(let w=0;w<n;w++)weekly.push(lineup(rows,r=>(r[key]||[])[w]||0).total);
+  return {avg:weekly.reduce((a,b)=>a+b,0)/n,weekly};
+}
+const seasonValue=(rows,key,val)=>seasonLineup(rows,key).avg+hcBonus(rows,val).ppw;
 function posStrength(rows,val){const lu=lineup(rows,val),o={QB:0,RB:0,WR:0,TE:0};rows.forEach(r=>{if(lu.used.has(r.player_id)&&o[r.position]!=null)o[r.position]+=val(r)});return o}
 function leagueRanks(over){ // over: {team_id: rows} replacing those teams' rosters
   const teams=(L.team.strength||[]).map(t=>t.team_id), st={};
@@ -466,8 +474,9 @@ function sideEffect(roster,out,inn){
   const outIds=new Set(out.map(p=>p.player_id));
   const after=roster.filter(p=>!outIds.has(p.player_id)).concat(inn);
   const b=lineup(roster,ppw), a=lineup(after,ppw);
+  const sb=seasonLineup(roster,'wk_pts'), sa=seasonLineup(after,'wk_pts');
   const hb=hcBonus(roster,ppw), ha=hcBonus(after,ppw);
-  const bm=teamValue(roster,mppw), am=teamValue(after,mppw);
+  const bm=seasonValue(roster,'wk_mkt',mppw), am=seasonValue(after,'wk_mkt',mppw);
   const bench=rs=>rs.filter(p=>!lineup(rs,ppw).used.has(p.player_id)).sort((x,y)=>ppw(y)-ppw(x));
   const depth=rs=>bench(rs).slice(0,4).reduce((t,p)=>t+ppw(p),0);
   const slotNotes=[];
@@ -476,8 +485,9 @@ function sideEffect(roster,out,inn){
     const before=(b.filled[slot]||[]).reduce((t,p)=>t+ppw(p),0), aft=(a.filled[slot]||[]).reduce((t,p)=>t+ppw(p),0);
     if(Math.abs(aft-before)>=0.4)slotNotes.push(`${slot} ${aft>before?'+':''}${(aft-before).toFixed(1)}/wk`);
   }
-  return {lineupDelta:a.total-b.total, hcDelta:(ha.ppw-hb.ppw)*WKS, hcNotesAfter:ha.notes, hcNotesBefore:hb.notes,
-          rosDelta:((a.total+ha.ppw)-(b.total+hb.ppw))*WKS, marketDelta:(am-bm)*WKS,
+  const weekly=sa.weekly.map((x,i)=>x-(sb.weekly[i]||0));
+  return {lineupDelta:sa.avg-sb.avg, hcDelta:(ha.ppw-hb.ppw)*WKS, hcNotesAfter:ha.notes, hcNotesBefore:hb.notes,
+          rosDelta:((sa.avg+ha.ppw)-(sb.avg+hb.ppw))*WKS, marketDelta:(am-bm)*WKS, weekly, thisWeek:weekly[0]||0,
           depthDelta:(depth(after)-depth(roster))*WKS*0.3, spots:inn.length-out.length, slotNotes,
           after, starters:a.used, wasStarter:b.used};
 }
@@ -495,6 +505,29 @@ function tradeVerdict(you,them,fit){
   if(y>-3)return ['warn','Roughly even','Neither lineup moves much ('+sgn(y)+' for you).'+fitTxt+(note||' Only worth doing for bye-week or schedule reasons.')];
   if(y<=-8)return ['bad','Turn this down','You lose '+f1(-y)+' points rest of season.'+fitTxt+note];
   return ['warn','Slightly against you','You lose '+f1(-y)+' points rest of season. Close enough that roster fit could justify it.'+fitTxt+note];
+}
+// Why "this week" and "rest of season" can disagree: usually a bye or an injury this week.
+function whyWeek(you,give,get){
+  const wk=you.thisWeek, ros=you.rosDelta;
+  const absent=ps=>ps.filter(p=>(p.wk_pts||[])[0]!=null&&(p.wk_pts[0]||0)<0.35*(p.proj_ppg||0));
+  const why=p=>p.on_bye?'on bye':(p.play_prob!=null&&p.play_prob<0.5?'likely out':'limited');
+  const names=ps=>ps.map(p=>`${esc(p.name)} (${why(p)})`).join(' and ');
+  const wkEnd=D.plan_week+(you.weekly.length||1)-1;
+  const better=you.weekly.filter(x=>x>0.3).length, worse=you.weekly.filter(x=>x<-0.3).length;
+  let txt='';
+  if(wk>=1.5&&ros<0){const a=absent(give);
+    txt=`Week ${D.plan_week} looks better because ${a.length?names(a)+' would score nothing for you that week anyway':'of this week\'s matchups and injuries'}. Over weeks ${D.plan_week}-${wkEnd} the trade costs you ${f1(-ros)} points: your lineup is better in ${better} week${better===1?'':'s'} and worse in ${worse}.`}
+  else if(wk<=-1.5&&ros>0){const a=absent(get);
+    txt=`Week ${D.plan_week} dips because ${a.length?names(a)+' can\'t help you that week':'of this week\'s matchups and injuries'}, but over weeks ${D.plan_week}-${wkEnd} you gain ${f1(ros)} points: better in ${better} week${better===1?'':'s'}, worse in ${worse}.`}
+  return txt?`<p class="sub" style="margin:-4px 0 12px"><b>This week vs. the season:</b> ${txt}</p>`:'';
+}
+function weekStrip(you,name){
+  const w=you.weekly||[];if(w.length<2)return '';const mx=Math.max(1,...w.map(Math.abs));
+  return `<div style="margin-top:12px"><p class="sub" style="margin-bottom:4px">${esc(name)}: lineup change each week (best lineup set week by week, so byes and injuries are covered by your bench)</p>
+  <div style="display:flex;gap:3px;align-items:center;height:64px">${w.map((v,i)=>`<div title="Week ${D.plan_week+i}: ${sgn(v)} pts" style="flex:1;display:flex;flex-direction:column;justify-content:center;height:100%">
+     <div style="height:50%;display:flex;align-items:flex-end"><div style="width:100%;height:${v>0?Math.max(2,v/mx*100):0}%;background:var(--good);border-radius:2px 2px 0 0"></div></div>
+     <div style="height:50%;display:flex;align-items:flex-start;border-top:1px solid var(--line)"><div style="width:100%;height:${v<0?Math.max(2,-v/mx*100):0}%;background:var(--bad);border-radius:0 0 2px 2px"></div></div></div>`).join('')}</div>
+  <div style="display:flex;gap:3px;font-size:10.5px" class="mute">${w.map((v,i)=>`<div style="flex:1;text-align:center">${D.plan_week+i}</div>`).join('')}</div></div>`;
 }
 let TA={a:null,b:null,give:new Set(),get:new Set()};
 function openTrade(k){const i=L.trade_ideas[k];TA.a=L.team.team_id;TA.b=i.team_id;TA.give=new Set(i.give_ids);TA.get=new Set(i.get_ids);go('analyzer');window.scrollTo(0,0)}
@@ -525,15 +558,17 @@ function taVerdict(){  // selections changed: leave the lists alone so nothing j
   const [cls,title,line]=tradeVerdict(you,them,fit);
   const nameOf=tid=>(teams.find(t=>t.team_id===tid)||{}).name||'Team';
   const side=(label,s,pkg)=>`<div class="stat"><span>${esc(label)}</span><b class="${s.rosDelta>0?'good':s.rosDelta<0?'bad':''}">${sgn(s.rosDelta)} pts</b><span style="font-size:11px">rest of season, lineup + handcuffs</span>
-    <div class="mute" style="font-size:12px">${sgn(s.lineupDelta)}/wk lineup · ${sgn(s.marketDelta)} by consensus · ${s.spots>0?'+':''}${s.spots} roster spot${Math.abs(s.spots)===1?'':'s'}
+    <div class="mute" style="font-size:12px">next week (wk ${D.plan_week}) <span style="font-weight:700" class="${s.thisWeek>0.05?'good':s.thisWeek<-0.05?'bad':''}">${sgn(s.thisWeek)}</span> · season avg ${sgn(s.lineupDelta)}/wk<br>${sgn(s.marketDelta)} by consensus · ${s.spots>0?'+':''}${s.spots} roster spot${Math.abs(s.spots)===1?'':'s'}
     ${s.moves&&s.moves.length?'<br>'+s.moves.map(m=>`<span class="${m.to<m.from?'good':'bad'}">${m.ps} ${ord(m.from)}→${ord(m.to)}</span>`).join(' · '):''}
     ${Math.abs(s.hcDelta)>=0.5?'<br>handcuff insurance '+sgn(s.hcDelta):''}${s.depthDelta?'<br>bench depth '+sgn(s.depthDelta):''}</div></div>`;
   const plist=(ps,who)=>ps.map(p=>`<div class="p" onclick="detail('${p.player_id}')">${nm(p)} <span class="mute">${f1(ppw(p))}/wk · ${f0(p.ros_points)} ROS · ${p.position}${f0(p.own_pos_rank)} us / ${p.consensus_pos_rank?p.position+f0(p.consensus_pos_rank):'–'} market${(p.exp_missed||0)>=1?' · out ~'+f1(p.exp_missed)+' games':''}</span></div>`).join('');
   box.innerHTML=`<div class="banner" style="background:${cls==='good'?'var(--good-bg)':cls==='bad'?'var(--bad-bg)':'var(--warn-bg)'};color:${cls==='good'?'var(--good)':cls==='bad'?'var(--bad)':'var(--warn)'}"><b>${title}</b><br>${line}</div>
+   ${whyWeek(you,give,get)}
    <div class="grid">${side(nameOf(TA.a)+' (you)',you)}${side(nameOf(TA.b),them)}</div>
+   ${weekStrip(you,nameOf(TA.a))}
    <div class="split" style="margin-top:14px">
      <div><p class="sub"><b>Out:</b></p>${plist(give)}</div><div><p class="sub"><b>In:</b></p>${plist(get)}</div></div>
-   <p class="sub" style="margin-top:12px">Points are rest-of-season starting-lineup points, already adjusted for injuries and byes. "By consensus" re-runs the same calculation using FantasyPros and ESPN ranks instead of ours, which is roughly how the other manager sees it.</p>`;
+   <p class="sub" style="margin-top:12px">Points are rest-of-season starting-lineup points: the best lineup is set separately for every remaining week (week ${D.plan_week} uses this week's projections; later weeks use rest-of-season rates, zero on byes and while injured), and the weeks are added up, so your bench gets credit for covering byes and injuries. "By consensus" re-runs the same calculation using FantasyPros and ESPN ranks instead of ours, which is roughly how the other manager sees it.</p>`;
   // what each roster looks like afterwards
   const giveIds=new Set(give.map(p=>p.player_id)), getIds=new Set(get.map(p=>p.player_id));
   const aAfter=rosterOf(TA.a).filter(p=>!giveIds.has(p.player_id)).concat(get);
@@ -541,10 +576,10 @@ function taVerdict(){  // selections changed: leave the lists alone so nothing j
   const wkA0=buildLineup(rosterOf(TA.a),others(TA.a)).total, wkA1=buildLineup(aAfter,others(TA.a)).total;
   const wkB0=buildLineup(rosterOf(TA.b),others(TA.b)).total, wkB1=buildLineup(bAfter,others(TA.b)).total;
   const afterCard=(tid,rows,newIds,w0,w1)=>`<div><h3 style="margin:0 0 2px;font-size:14px">${esc(nameOf(tid))} after the trade</h3>
-     <p class="sub">Week ${D.plan_week} projected starters: ${f1(w0)} → <b class="${w1>w0+0.05?'good':w1<w0-0.05?'bad':''}">${f1(w1)}</b></p>
+     <p class="sub">Week ${D.plan_week} starters: ${f1(w0)} → <b class="${w1>w0+0.05?'good':w1<w0-0.05?'bad':''}">${f1(w1)}</b></p>
      ${lineupHtml(rows,others(tid),{newIds,tid})}</div>`;
   box.innerHTML+=`<div class="card" style="margin:16px -18px -16px;border-radius:0 0 var(--radius) var(--radius);border-left:0;border-right:0;border-bottom:0;box-shadow:none">
-     <h2>Rosters after the trade</h2><p class="sub">Each team's projected lineup for week ${D.plan_week} with the new players slotted in (highlighted). Bench below the line.</p>
+     <h2>Rosters after the trade: week ${D.plan_week} only</h2><p class="sub">Each team's projected lineup for next week with the new players slotted in (highlighted), bench below the line. This is one week: a player on bye or hurt this week counts as zero here, so judge the trade by the rest-of-season numbers and the week-by-week row above.</p>
      <div class="split">${afterCard(TA.a,aAfter,getIds,wkA0,wkA1)}${afterCard(TA.b,bAfter,giveIds,wkB0,wkB1)}</div></div>`;
   wireRows(box);
 }

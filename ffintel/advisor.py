@@ -9,18 +9,34 @@ ELIGIBLE = {"QB": {"QB"}, "RB": {"RB"}, "WR": {"WR"}, "TE": {"TE"},
             "FLEX": {"RB", "WR", "TE"}, "OP": {"QB", "RB", "WR", "TE"}}
 
 
-def best_lineup(rows: list[dict], lineup: dict, col: str) -> tuple[float, set]:
-    """Greedy optimal lineup (exact for standard ESPN slot structures)."""
-    pool = sorted(rows, key=lambda r: -(r.get(col) or 0))
+def best_lineup(rows: list[dict], lineup: dict, col: str, week: int | None = None) -> tuple[float, set]:
+    """Greedy optimal lineup (exact for standard ESPN slot structures).
+    With `week`, `col` holds a list of weekly points and that week's value is used."""
+    val = (lambda r: (r.get(col) or [0])[week] if r.get(col) else 0.0) if week is not None \
+        else (lambda r: r.get(col) or 0)
+    pool = sorted(rows, key=lambda r: -val(r))
     used, total = set(), 0.0
     for slot in LINEUP_ORDER:
         for _ in range(lineup.get(slot, 0)):
             for r in pool:
                 if r["player_id"] not in used and r["position"] in ELIGIBLE[slot]:
                     used.add(r["player_id"])
-                    total += r.get(col) or 0
+                    total += val(r)
                     break
     return total, used
+
+
+WEEKLY = {"ros_ppw": "wk_pts", "mkt_ppw": "wk_mkt"}
+
+
+def season_lineup(rows: list[dict], lineup: dict, col: str) -> tuple[float, list]:
+    """Average points per week of the best lineup set separately for EVERY remaining week
+    (so byes and injuries are covered by the bench), plus the week-by-week totals."""
+    n = max((len(r.get(col) or []) for r in rows), default=0)
+    if n == 0:
+        return 0.0, []
+    weekly = [best_lineup(rows, lineup, col, w)[0] for w in range(n)]
+    return sum(weekly) / n, weekly
 
 
 class Advisor:
@@ -43,6 +59,10 @@ class Advisor:
         return self.df.loc[ids].to_dict("records")
 
     def lineup_value(self, rows, col="ros_ppw"):
+        """Average weekly points of the best lineup, set week by week (byes, injuries, bench cover)."""
+        wcol = WEEKLY.get(col)
+        if wcol and rows and rows[0].get(wcol) is not None:
+            return season_lineup(rows, self.league.lineup, wcol)[0]
         return best_lineup(rows, self.league.lineup, col)[0]
 
     def team_value(self, rows, col="ros_ppw"):

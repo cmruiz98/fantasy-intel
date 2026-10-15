@@ -48,7 +48,7 @@ PLAYER_COLS = ["player_id", "name", "position", "team", "age", "headshot", "game
                "qb", "qb_was", "qb_pass_ppg", "qb_factor", "qb_factor_week", "team_qb_factor", "qb_change", "qb_starter", "opponent", "matchup", "imp_total", "imp_avg", "spread", "vegas", "game_factor", "week_proj", "vor_ppg", "ros_value", "pos_rank", "ovr_rank",
                "own_pos_rank", "consensus_pos_rank", "consensus_sources", "fp_ros", "fp_week", "espn_proj",
                "fp_ros_best", "fp_ros_worst", "market_ros_points", "value_gap", "gap_ppg", "rank_gap",
-               "verdict", "note", "star", "hc_of", "hc_of_name", "hc_contingent", "hc_out_games", "next_up_for",
+               "verdict", "note", "star", "hc_of", "hc_of_name", "hc_contingent", "hc_out_games", "next_up_for", "wk_pts", "wk_mkt",
                "depth_label", "depth_source", "depth_move", "depth_dir", "route_pct", "routes_pg", "tprr", "yprr",
                "fr_share", "separation", "slot_rate", "opp_share", "wopp_pg", "route_weeks", "adv_notes", "pp_url", "pp_updated", "owner", "owner_name", "pct_owned", "pct_change"]
 
@@ -183,6 +183,7 @@ def main():
     df["adv_notes"] = [advanced.reasons(adv.get(p), pos) for p, pos in zip(df.player_id, df.position)]
 
     weeks_left = max(1, config.LAST_FANTASY_WEEK - plan_week + 1)
+    df = model.weekly_points(df, rem, plan_week, config.LAST_FANTASY_WEEK)
     out = {"generated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
            "season": season, "week": cur_week, "plan_week": plan_week, "weeks_left": weeks_left, "rec_pts": rec_pts,
            "replacement": repl, "lineup": lineup, "teams": teams,

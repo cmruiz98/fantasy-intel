@@ -697,6 +697,44 @@ def handcuffs(df: pd.DataFrame, fill_ins: list | None = None, chart: pd.DataFram
     return df
 
 
+def weekly_points(df: pd.DataFrame, rem: dict, plan_week: int, last_week: int) -> pd.DataFrame:
+    """Expected points in each remaining fantasy week, for week-by-week lineups.
+
+    Week 1 (the week being planned) uses next week's projection, which already has
+    the Vegas total, this week's injury odds and any next-man-up role. Later weeks use
+    the rest-of-season rate, zero on byes, and the expected games missed spread over
+    the next games (out ~3 games -> missing weeks 2-3 after this one, partly the 4th).
+    Trades and waivers sum the best lineup of every week, so a bench player gets credit
+    for covering byes and injuries, and a player on bye this week isn't written off.
+    `wk_mkt` is the same pattern scaled to the consensus (market) rest-of-season value.
+    """
+    df = df.copy()
+    weeks = list(range(plan_week, last_week + 1))
+    sched = rem.get("weeks", {})
+    pts, mkt = [], []
+    for r in df.itertuples(index=False):
+        plays = set(sched.get(r.team, [])) if isinstance(r.team, str) else set()
+        rate = float(r.proj_ppg or 0)
+        missed = float(r.exp_missed or 0) if pd.notna(r.exp_missed) else 0.0
+        v, k = [], 0
+        for w in weeks:
+            if w not in plays:
+                v.append(0.0)
+                continue
+            if k == 0 and w == plan_week:
+                v.append(float(r.week_proj or 0) if pd.notna(r.week_proj) else 0.0)
+            else:
+                v.append(rate * (1 - min(max(missed - k, 0.0), 1.0)))
+            k += 1
+        tot = sum(v)
+        m = r.market_ros_points if pd.notna(r.market_ros_points) else r.ros_points
+        scale = (float(m) / tot) if tot > 0 and pd.notna(m) else 1.0
+        pts.append([round(x, 2) for x in v])
+        mkt.append([round(x * scale, 2) for x in v])
+    df["wk_pts"], df["wk_mkt"] = pts, mkt
+    return df
+
+
 def handcuff_bonus(rows: list[dict], lineup: dict, col: str, weeks: float) -> tuple[float, list]:
     """Extra points per week a roster gets from its handcuffs.
 
