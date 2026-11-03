@@ -1,0 +1,813 @@
+"""Our own player ratings.
+
+How a projection is built (points per game, rest of season):
+  1. PRIOR  - what the player has done historically: last three seasons weighted
+              50/33/17, counting only games where he played a real role. Rookies get
+              a prior from how past rookies at their position and draft round did.
+  2. NOW    - this season, blending actual points with expected points (xFP) from
+              the player's workload. xFP is steadier than box scores, so a star with a
+              normal workload and a quiet stat line barely moves.
+  3. BLEND  - the two are combined like a credibility-weighted average. The prior
+              counts as K "phantom games" (more for proven players), so two weeks
+              can't erase three seasons. If his snap share has clearly changed, the
+              prior is trusted less, because a real role change should move fast.
+              K was tuned on the 2025 season: this blend beat history alone, this
+              season alone, and usage alone at predicting the rest of the year.
+Then injuries, byes and the schedule turn points-per-game into rest-of-season points.
+"""
+import numpy as np
+import pandas as pd
+
+from . import config, injuries, vegas
+
+BASE_K = {"QB": 6.0, "RB": 4.0, "WR": 5.0, "TE": 5.0}
+SEASON_WEIGHTS = [0.17, 0.33, 0.5]  # oldest -> newest history season
+AGE_DECLINE = {"RB": (27, 0.05), "WR": (29, 0.035), "TE": (30, 0.03), "QB": (35, 0.03)}
+REAL_GAME_SNAP = 0.20
+RECENCY = 0.8  # each week back counts 80% as much: this month matters more than September
+STAR_DEPTH = {"QB": 8, "RB": 10, "WR": 12, "TE": 6}
+
+
+def _real_games(w: pd.DataFrame) -> pd.DataFrame:
+    return w[(w.snap_pct.isna()) | (w.snap_pct >= REAL_GAME_SNAP)]
+
+
+def history_priors(hist: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
+    """Weighted historical points-per-game for every player with history."""
+    if hist.empty:
+        return pd.DataFrame(columns=["player_id"])
+    h = _real_games(hist)
+    seasons = sorted(h.season.unique())
+    wmap = dict(zip(seasons, SEASON_WEIGHTS[-len(seasons):]))
+    g = h.groupby(["player_id", "season"]).agg(
+        games=("points", "size"), ppg=("points", "mean"), xfpg=("xfp", "mean"),
+        snap=("snap_pct", "mean"), team=("team", "last"), pos=("position", "last")).reset_index()
+    g["w"] = g.season.map(wmap) * g.games
+    g["wppg"] = g.w * g.ppg
+    g["wxfp"] = g.w * g.xfpg
+    agg = g.groupby("player_id").agg(w=("w", "sum"), wppg=("wppg", "sum"), wxfp=("wxfp", "sum")).reset_index()
+    agg["prior_ppg"] = agg.wppg / agg.w
+    agg["prior_xfp"] = agg.wxfp / agg.w
+    agg["prior_games_eff"] = agg.w / sum(wmap.values())  # ~ games of evidence
+    last = g.sort_values("season").groupby("player_id").tail(1)
+    agg = agg.merge(last[["player_id", "season", "ppg", "snap", "team", "games"]].rename(columns={
+        "season": "last_season", "ppg": "last_season_ppg", "snap": "last_season_snap",
+        "team": "last_team", "games": "last_season_games"}), on="player_id")
+    return agg[["player_id", "prior_ppg", "prior_xfp", "prior_games_eff", "last_season",
+                "last_season_ppg", "last_season_snap", "last_team", "last_season_games"]]
+
+
+def rookie_priors(hist: pd.DataFrame, players: pd.DataFrame) -> dict:
+    """Average first-season PPG by position and draft-round bucket."""
+    def bucket(r):
+        if pd.isna(r):
+            return "UDFA"
+        r = int(r)
+        return "R1" if r == 1 else "R2" if r == 2 else "R3-4" if r <= 4 else "R5+"
+
+    out = {}
+    if hist.empty:
+        return out
+    p = players[["gsis_id", "rookie_season", "draft_round"]].rename(columns={"gsis_id": "player_id"})
+    h = _real_games(hist).merge(p, on="player_id")
+    h = h[h.season == h.rookie_season]
+    g = h.groupby(["player_id", "position", "draft_round"], dropna=False).agg(
+        games=("points", "size"), ppg=("points", "mean")).reset_index()
+    g = g[g.games >= 3]
+    g["b"] = g.draft_round.map(bucket)
+    for (pos, b), grp in g.groupby(["position", "b"]):
+        out[(pos, b)] = float(grp.ppg.median())
+    out["_bucket"] = bucket
+    return out
+
+
+def season_to_date(cur: pd.DataFrame, short_games: set = frozenset()) -> pd.DataFrame:
+    if cur.empty:
+        return pd.DataFrame(columns=["player_id"])
+    c = cur.sort_values("week")
+    # Every game he was active for counts, even a 5% snap cameo: that IS the evidence
+    # that he has no role. Only games he left injured are thrown out.
+    real = c
+    if short_games:
+        keep = [(p, w) not in short_games for p, w in zip(real.player_id, real.week)]
+        real = real[keep]
+    def weighted(g):
+        """Recent games count more, so a player getting better (or worse) shows up fast."""
+        w = RECENCY ** np.arange(len(g) - 1, -1, -1)
+        return pd.Series({"games": float(len(g)),
+                          "cur_ppg": float(np.average(g.points, weights=w)),
+                          "cur_xfp": float(np.average(g.xfp, weights=w))})
+
+    base = real.sort_values("week").groupby("player_id")[["points", "xfp"]].apply(weighted).reset_index()
+    tot = c.groupby("player_id").agg(
+        name=("name", "last"), position=("position", "last"), team=("team", "last"),
+        headshot=("headshot_url", "last"), all_games=("points", "size"),
+        pts_total=("points", "sum"), snap_pct=("snap_pct", "mean"), target_share=("target_share", "mean"),
+        air_yards_share=("air_yards_share", "mean"), wopr=("wopr", "mean"),
+        targets=("targets", "sum"), receptions=("receptions", "sum"), rec_yds=("receiving_yards", "sum"),
+        carries=("carries", "sum"), rush_yds=("rushing_yards", "sum"), pass_yds=("passing_yards", "sum"),
+        pass_tds=("passing_tds", "sum"), ints=("passing_interceptions", "sum"), tds=("total_tds", "sum"),
+        touches=("touches", "sum"), rz_targets=("rz_targets", "sum"), ez_targets=("ez_targets", "sum"),
+        rz_carries=("rz_carries", "sum"), i10_carries=("i10_carries", "sum"),
+        rz_tgt_share=("rz_tgt_share", "mean"), rz_rush_share=("rz_rush_share", "mean"),
+        xfp_total=("xfp", "sum"), last_week=("week", "max")).reset_index()
+    last3 = c.groupby("player_id").tail(3).groupby("player_id").agg(
+        l3_ppg=("points", "mean"), l3_snap=("snap_pct", "mean"), l3_tshare=("target_share", "mean"),
+        l3_xfp=("xfp", "mean")).reset_index()
+    last2 = c.groupby("player_id").tail(2).groupby("player_id").agg(l2_snap=("snap_pct", "mean")).reset_index()
+    weekly = c.groupby("player_id").points.apply(lambda s: [round(float(x), 1) for x in s]).rename("weekly_pts")
+    out = tot.merge(base, on="player_id", how="left").merge(last3, on="player_id", how="left") \
+             .merge(last2, on="player_id", how="left").merge(weekly.reset_index(), on="player_id", how="left")
+    out["games"] = out.games.fillna(0)
+    return out
+
+
+def remaining_schedule(sched: pd.DataFrame, season: int):
+    """Current NFL week, the week to plan lineups for, and each team's remaining games.
+
+    Once most of a week's games are final (e.g. only Monday night is left), lineup
+    advice looks ahead to next week, while rest-of-season totals still count the
+    games left this week.
+    """
+    s = sched[(sched.season == season) & (sched.game_type == "REG")]
+    if s.empty:
+        return 1, {"plan_week": 1, "weeks": {}, "opp": {}}
+    unplayed = s[s.result.isna()]
+    cur_week = int(unplayed.week.min()) if len(unplayed) else int(s.week.max()) + 1
+    this = s[s.week == cur_week]
+    done_share = this.result.notna().mean() if len(this) else 1
+    plan_week = cur_week + 1 if done_share >= 0.75 else cur_week
+    rem = unplayed[unplayed.week <= config.LAST_FANTASY_WEEK]
+    weeks, opp = {}, {}
+    for _, g in rem.iterrows():
+        for t, o in ((g.home_team, g.away_team), (g.away_team, g.home_team)):
+            weeks.setdefault(t, []).append(int(g.week))
+            if int(g.week) == plan_week:
+                opp[t] = o
+    return cur_week, {"plan_week": plan_week, "weeks": weeks, "opp": opp}
+
+
+def market_injury_check(df: pd.DataFrame, fp: pd.DataFrame | None) -> pd.DataFrame:
+    """Cross-check injury length against the experts.
+
+    Feeds often say only "IR" with no timeline. FantasyPros keeps two lists: dynasty
+    (long-term value) and rest-of-season. A hurt starter who is still in the dynasty
+    rankings but has been dropped from rest-of-season rankings, or buried far below where
+    his talent would put him, is one the experts expect to miss most or all of the year.
+    Only applies to players already carrying a real injury designation.
+    """
+    if fp is None or fp.empty or "fp_dyn" not in fp:
+        return df
+    df = df.copy()
+    m = fp.set_index("player_id")
+    ros, dyn = df.player_id.map(m.fp_ros), df.player_id.map(m.fp_dyn)
+    healthy_rank = df.groupby("position").proj_ppg.rank(ascending=False, method="first")
+    hurt = df.inj_status.isin(["IR", "PUP", "NFI", "SEASON", "OUT", "TBD", "LEFT GAME", "SUSPENSION"]) \
+        & (df.exp_missed_raw.fillna(0) >= 0.5)
+    dropped = dyn.notna() & ros.isna() & (healthy_rank <= 40)
+    long_status = df.inj_status.isin(["IR", "PUP", "NFI", "SEASON", "SUSPENSION"]) | (df.exp_missed_raw.fillna(0) >= 2)
+    buried = ros.notna() & (healthy_rank <= 30) & (ros > np.maximum(60, 4 * healthy_rank)) & long_status
+    hit = hurt & (dropped | buried) & (df.exp_missed_raw.fillna(0) < df.rem_weeks)
+    df.loc[hit, "exp_missed_raw"] = df.loc[hit, "rem_weeks"].astype(float)
+    df.loc[hit, "p_miss_next"] = 1.0
+    df.loc[hit, "inj_status"] = np.where(df.loc[hit, "inj_status"].isin(["IR", "PUP", "NFI"]),
+                                         df.loc[hit, "inj_status"], "OUT")
+    df.loc[hit, "inj_detail"] = df.loc[hit, "inj_detail"].fillna("").astype(str).str.rstrip(". ") + \
+        ". Experts have dropped him from rest-of-season rankings, so he is treated as out for the season."
+    df["market_long_term"] = hit
+    return df
+
+
+def report_dates(sched: pd.DataFrame, season: int) -> dict:
+    """(team, week) -> approximate time of that week's final injury report (2 days pre-game)."""
+    s = sched[(sched.season == season) & (sched.game_type == "REG")]
+    out = {}
+    for g in s.itertuples(index=False):
+        t = (pd.Timestamp(g.gameday) - pd.Timedelta(days=2)).tz_localize("America/New_York").replace(hour=16)
+        out[(g.home_team, int(g.week))] = out[(g.away_team, int(g.week))] = t.isoformat()
+    return out
+
+
+def team_game_dates(sched: pd.DataFrame, season: int) -> dict:
+    s = sched[(sched.season == season) & (sched.game_type == "REG")]
+    out = {}
+    for g in s.itertuples(index=False):
+        for t in (g.home_team, g.away_team):
+            out.setdefault(t, []).append(pd.Timestamp(g.gameday))
+    return out
+
+
+# ---------------------------------------------------------------- preseason expectation
+PRESEASON_K = {"QB": 4.0, "RB": 5.0, "WR": 5.0, "TE": 5.0}  # phantom games in week 1
+PRESEASON_FADE = 8.0  # games after which the preseason view counts for nothing
+
+
+def preseason_expectation(df: pd.DataFrame, draft_ranks: dict, drafted: dict) -> pd.Series:
+    """What the market expected of each player in August, in points per game.
+
+    Managers do not forget where they drafted somebody after two quiet weeks, and the
+    preseason view carries real information our box scores cannot see yet: an offseason
+    move, a new role, a camp report. Each player's preseason rank (his draft slot in
+    your league if he was drafted, otherwise ESPN's draft ranking) is mapped onto our
+    own projection curve at his position, so "the 5th tight end off the board" becomes
+    the points per game of our 5th-best tight end.
+    """
+    if not draft_ranks and not drafted:
+        return pd.Series(np.nan, index=df.index)
+    rank = df.player_id.map(drafted)
+    rank = rank.fillna(df.player_id.map(draft_ranks))
+    out = pd.Series(np.nan, index=df.index)
+    for pos, grp in df.groupby("position"):
+        r = rank.loc[grp.index]
+        if r.notna().sum() < 3:
+            continue
+        pos_rank = r.rank(method="first")          # order within the position
+        curve = np.sort(grp.proj_ppg.values)[::-1]  # our own points curve at that position
+        ok = pos_rank.notna()
+        out.loc[grp.index[ok]] = np.interp(pos_rank[ok], np.arange(1, len(curve) + 1), curve)
+    return out
+
+
+# ---------------------------------------------------------------- quarterback context
+PASS_SHARE = {"WR": 1.0, "TE": 0.9, "RB": 0.35, "QB": 0.0}  # how much of a player's value rides on the QB
+
+
+def _pass_games(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    d = df[(df.position == "QB") & (df.attempts.fillna(0) >= 10)].copy()
+    d["pass_pts"] = (d.passing_yards.fillna(0) * 0.04 + d.passing_tds.fillna(0) * 4
+                     - d.passing_interceptions.fillna(0) * 2)
+    return d
+
+
+def passing_quality(cur: pd.DataFrame, hist: pd.DataFrame, k: float = 4.0):
+    """Passing points per start for every QB: history blended with this season.
+
+    This is passing only. A quarterback's own rushing yards do nothing for his
+    receivers, and the point here is what the pass catchers around him can expect.
+    """
+    h, c = _pass_games(hist), _pass_games(cur)
+    prior = pd.Series(dtype=float)
+    if len(h):
+        g = h.groupby(["player_id", "season"]).pass_pts.agg(["mean", "size"]).reset_index()
+        seasons = sorted(g.season.unique())
+        wmap = dict(zip(seasons, SEASON_WEIGHTS[-len(seasons):]))
+        g["w"] = g.season.map(wmap) * g["size"]
+        g["wp"] = g.w * g["mean"]
+        agg = g.groupby("player_id")[["w", "wp"]].sum()
+        prior = agg.wp / agg.w
+    now = c.groupby("player_id").pass_pts.agg(["mean", "size"]) if len(c) else pd.DataFrame()
+    league = float(pd.concat([h.pass_pts, c.pass_pts]).mean()) if len(h) or len(c) else 15.0
+    out = {}
+    for pid in set(prior.index) | set(now.index):
+        pr = prior.get(pid, np.nan)
+        n = float(now["size"].get(pid, 0)) if len(now) else 0.0
+        cu = float(now["mean"].get(pid, np.nan)) if len(now) else np.nan
+        if np.isnan(pr):
+            pr = league * 0.85  # unproven: assume a shade below average
+        out[pid] = (k * pr + n * cu) / (k + n) if n else pr
+    return out, league
+
+
+QB_ELASTICITY = 0.55  # measured 2023-25: top receivers lose ~0.55% per 1% drop in QB passing quality
+QB_FACTOR_RANGE = (0.60, 1.12)
+
+
+def team_qb_context(df: pd.DataFrame, cur: pd.DataFrame, quality: dict, league: float) -> dict:
+    """Who each team is likely to start at QB, and what that means for its pass catchers.
+
+    A receiver's history and this season's stats were produced with his usual
+    quarterback, so the adjustment is relative to THAT quarterback, not the league
+    average: it is 1.00 whenever the usual starter plays. When a backup plays, receivers
+    move by (backup / starter) ^ 0.55, which is what 2023-25 games show: a backup at
+    70% of the starter's passing quality leaves top receivers with about 82% of their output.
+
+    Two versions are produced: one for next week (depends on whether the starter plays
+    THIS week) and one for the rest of the season (weighted by games he is expected to miss).
+    """
+    # The starter is whoever STARTED the most games (led his team in attempts that week),
+    # not whoever threw the most passes: a backup who played in relief can out-throw an
+    # injured starter without being the starter.
+    qb_rows = cur[cur.position == "QB"] if len(cur) else pd.DataFrame(columns=["player_id", "team", "week", "attempts"])
+    starts = qb_rows.sort_values("attempts", ascending=False).groupby(["team", "week"]).head(1) \
+        .groupby("player_id").size() if len(qb_rows) else pd.Series(dtype=float)
+    att = qb_rows.groupby("player_id").attempts.sum() if len(qb_rows) else pd.Series(dtype=float)
+    out = {}
+    qbs = df[df.position == "QB"]
+    lo, hi = QB_FACTOR_RANGE
+    # who started each team-week
+    starters = qb_rows.sort_values("attempts", ascending=False).groupby(["team", "week"]).head(1) \
+        if len(qb_rows) else qb_rows
+    for team, grp in qbs.groupby("team"):
+        rows = grp.assign(starts=grp.player_id.map(starts).fillna(0), att=grp.player_id.map(att).fillna(0),
+                          q=grp.player_id.map(quality).fillna(league * 0.8))
+        # The reference QB is the INTENDED starter: whoever opened the season, unless he has
+        # been healthy and benched for the last two games. An injured Week 1 starter is still
+        # the reference, because that is who every receiver's projection was built around.
+        tw = starters[starters.team == team].sort_values("week") if len(starters) else starters
+        incumbent = rows.sort_values(["starts", "q", "att"], ascending=False).iloc[0]
+        if len(tw):
+            opener = tw.player_id.iloc[0]
+            recent = set(tw.player_id.iloc[-2:])
+            orow = rows[rows.player_id == opener]
+            if len(orow):
+                o = orow.iloc[0]
+                healthy = not (pd.notna(o.exp_missed) and o.exp_missed >= 0.5)
+                benched = healthy and opener not in recent and len(tw) >= 3
+                if not benched:
+                    incumbent = o
+        others = rows[(rows.player_id != incumbent.player_id) & (rows.exp_missed.fillna(0) < 1)]
+        backup = others.sort_values(["starts", "att", "q"], ascending=False).iloc[0] if len(others) else incumbent
+        q_inc, q_bak = max(float(incumbent.q), 1.0), max(float(backup.q), 1.0)
+
+        num = lambda v, d=0.0: float(v) if pd.notna(v) else d  # NaN is truthy, so `or 0` is not enough
+        weeks = max(num(incumbent.rem_weeks, 1.0), 1.0)
+        out_games = min(num(incumbent.exp_missed), weeks)
+        share_out = 0.0 if backup.player_id == incumbent.player_id else out_games / weeks
+        p_out_next = 0.0 if backup.player_id == incumbent.player_id else num(incumbent.p_miss_next)
+
+        def factor(share):
+            q = (1 - share) * q_inc + share * q_bak
+            return float(np.clip((q / q_inc) ** QB_ELASTICITY, lo, hi))
+
+        ros_f, week_f = factor(share_out), factor(p_out_next)
+        starter_next = backup if p_out_next >= 0.5 else incumbent
+        out[team] = {"qb_id": starter_next.player_id, "qb": starter_next["name"],
+                     "qb_pass_ppg": round(q_bak if p_out_next >= 0.5 else q_inc, 1),
+                     "qb_factor": round(ros_f, 3), "qb_factor_week": round(week_f, 3),
+                     "starter_out": out_games > 0 or p_out_next > 0.25,
+                     "weeks_out": round(out_games, 1), "p_out_next": round(p_out_next, 2),
+                     "incumbent": incumbent["name"], "incumbent_q": round(q_inc, 1),
+                     "backup": backup["name"], "backup_q": round(q_bak, 1),
+                     "backup_id": backup.player_id}
+    return out
+
+
+def matchup_factors(cur: pd.DataFrame, hist_last: pd.DataFrame) -> dict:
+    """Points allowed to each position by each defense vs league average (shrunk)."""
+    frames = [f for f in (hist_last, cur) if not f.empty]
+    if not frames:
+        return {}
+    a = pd.concat(frames)
+    a = a[a.opponent_team.notna()]
+    by = a.groupby(["opponent_team", "position", "season", "week"]).points.sum().reset_index()
+    d = by.groupby(["opponent_team", "position"]).points.agg(["mean", "size"]).reset_index()
+    lg = by.groupby("position").points.mean()
+    out = {}
+    for _, r in d.iterrows():
+        raw = r["mean"] / lg[r.position]
+        shrink = r["size"] / (r["size"] + 8)
+        out[(r.opponent_team, r.position)] = float(np.clip(1 + (raw - 1) * shrink, 0.85, 1.15))
+    return out
+
+
+def age_factor(pos, age):
+    if pd.isna(age) or pos not in AGE_DECLINE:
+        return 1.0
+    start, rate = AGE_DECLINE[pos]
+    return max(0.7, 1 - rate * max(0.0, age - start))
+
+
+def build_ratings(cur, hist, players, sched, inj, extra_signals=None, short_games=frozenset(),
+                  draft_ranks=None, drafted=None, fp=None, lines=None) -> tuple[pd.DataFrame, dict]:
+    season = config.SEASON
+    cur_week, rem = remaining_schedule(sched, season)
+    priors = history_priors(hist, players)
+    rookies = rookie_priors(hist, players)
+    std = season_to_date(cur, short_games)
+
+    p = players[["gsis_id", "display_name", "position", "latest_team", "birth_date", "draft_round",
+                 "rookie_season", "espn_id", "status", "headshot"]].rename(
+        columns={"gsis_id": "player_id"})
+    p = p[p.position.isin(config.POSITIONS)]
+    # universe: anyone who played this season, or active with recent history
+    ids = set(std.player_id) | set(priors[priors.last_season >= season - 1].player_id)
+    ids |= set(p[(p.rookie_season == season) & (p.status == "ACT") & (p.draft_round.notna())].player_id)
+    df = p[p.player_id.isin(ids)].merge(std.drop(columns=["position"]), on="player_id", how="left") \
+                                 .merge(priors, on="player_id", how="left")
+    df = df[(df.status != "RET") & (df.status != "CUT") | df.all_games.notna()]
+    df["name"] = df.name.fillna(df.display_name)
+    df["team"] = df.team.fillna(df.latest_team)
+    df["headshot"] = df.headshot_x.fillna(df.headshot_y) if "headshot_x" in df else df.get("headshot")
+    df["age"] = (pd.Timestamp.today() - pd.to_datetime(df.birth_date, errors="coerce")).dt.days / 365.25
+    df["games"] = df.games.fillna(0)
+
+    # ---- prior
+    bucket = rookies.get("_bucket")
+    def rookie_prior(r):
+        if bucket is None:
+            return np.nan
+        return rookies.get((r.position, bucket(r.draft_round)), np.nan)
+    no_hist = df.prior_ppg.isna()
+    df.loc[no_hist, "prior_ppg"] = df[no_hist].apply(rookie_prior, axis=1)
+    df["prior_source"] = np.where(no_hist, "rookie/draft-capital baseline", "3-season history")
+    df["prior_games_eff"] = df.prior_games_eff.fillna(0)
+    df["prior_ppg"] = df.prior_ppg * [age_factor(pp, a) for pp, a in zip(df.position, df.age)]
+    df["prior_ppg"] = df.prior_ppg.fillna(df.groupby("position").cur_ppg.transform(lambda s: s.quantile(0.2)))
+    df["prior_ppg"] = df.prior_ppg.fillna(2.0)
+
+    # proven stars: top of the position (see STAR_DEPTH) by historical PPG at the position with a real sample
+    proven = df.prior_games_eff >= 10
+    prank = df[proven & ~no_hist].groupby("position").prior_ppg.rank(ascending=False, method="first")
+    df["star"] = False
+    df.loc[prank.index, "star"] = prank <= df.loc[prank.index, "position"].map(STAR_DEPTH)
+
+    # (A bigger prior just for stars was tested on 2025 and made projections slightly
+    # worse, so stars get protection at the verdict stage instead; see consensus.py.)
+    base_k = df.position.map(BASE_K)
+    reliability = np.clip(df.prior_games_eff / 6, 0.35, 1.0)  # one full recent season is enough
+    reliability = np.where(no_hist, 0.4, reliability)
+    k = base_k * reliability
+    # new team -> history is less relevant
+    moved = df.last_team.notna() & df.team.notna() & (df.last_team != df.team)
+    k = np.where(moved, k * 0.7, k)
+    # Role change: snap share moved >15 points vs last season.
+    # Losing a role makes history misleading, so trust it half as much. GAINING one does
+    # not: his old numbers came from fewer snaps, so they understate him if anything.
+    # Instead the prior is scaled up (gently, capped) for the bigger job he now holds.
+    role_delta = (df.l2_snap - df.last_season_snap) * 100
+    df["role_change"] = np.where(role_delta.abs() >= 15, np.sign(role_delta), 0)
+    k = np.where(df.role_change < 0, k * 0.5, k)
+    grew = (df.role_change > 0) & (df.l2_snap >= 0.55) & (df.last_season_snap > 0.15)
+    growth = np.clip(np.sqrt(df.l2_snap / df.last_season_snap.replace(0, np.nan)), 1.0, 1.25)
+    df["role_growth"] = np.where(grew, growth, 1.0)
+    df["prior_ppg"] = df.prior_ppg * df.role_growth
+    df["prior_weight_games"] = np.round(k, 1)
+
+    # ---- now
+    skill = df.position != "QB"
+    rate = np.where(skill, 0.5 * df.cur_ppg + 0.5 * df.cur_xfp, df.cur_ppg)
+    n = df.games.values
+    rate = np.where(n > 0, rate, 0)
+    # Healthy scratches count as zero-point games: a backup who isn't playing
+    # shouldn't coast on a rookie or old-team prior. Games missed injured don't count,
+    # and that has to be inferred: players on injured reserve drop off the weekly injury
+    # report, so a missed week with no report entry is NOT proof he was healthy. A player
+    # who has a real role whenever he plays (35%+ of snaps), or who has a starter's track
+    # record and hasn't played yet, missed those games hurt (Josh Jacobs, back from IR
+    # with 52% of snaps, was being charged six zero-point games).
+    team_weeks = cur.groupby("team").week.apply(set).to_dict() if len(cur) else {}
+    played = cur.groupby("player_id").week.apply(set).to_dict() if len(cur) else {}
+    listed = {}
+    if not inj.empty:  # on the report that week in any form (Out, Doubtful, Questionable, practice)
+        listed = inj.groupby("gsis_id").week.apply(set).to_dict()
+    reserve = players.ngs_status_short_description.astype(str).str.match(r"R/(I|Inj|PUP|NFI)")
+    on_reserve = set(players[reserve].gsis_id)
+    # (quarterbacks and rookies who haven't played are usually just inactive backups)
+    starter_prior = (df.prior_ppg.fillna(0) >= df.position.map({"RB": 7, "WR": 7, "TE": 5}).fillna(99)) \
+        & df.prior_source.astype(str).str.contains("history")
+    dnp = []
+    for pid, team, snap, g, sp in zip(df.player_id, df.team, df.snap_pct, df.all_games.fillna(0), starter_prior):
+        missed = team_weeks.get(team, set()) - played.get(pid, set()) - listed.get(pid, set())
+        real_role = (g > 0 and pd.notna(snap) and snap >= 0.35) or (g == 0 and sp)
+        dnp.append(0.0 if (pid in on_reserve or real_role) else float(len(missed)))
+    dnp = np.array(dnp)
+    df["healthy_dnp"] = dnp
+    rate = np.where(n + dnp > 0, rate * n / np.maximum(n + dnp, 1e-9), 0)
+    n = n + dnp
+    df["proj_ppg"] = (k * df.prior_ppg + n * rate) / (k + n)
+
+    # ---- what the market expected in August, fading out as real games pile up
+    pre = preseason_expectation(df, draft_ranks or {}, drafted or {})
+    k_pre = df.position.map(PRESEASON_K).fillna(0) * np.clip(1 - n / PRESEASON_FADE, 0, 1)
+    k_pre = np.where(pre.notna(), k_pre, 0.0)
+    df["preseason_ppg"] = pre
+    df["preseason_weight_games"] = np.round(k_pre, 1)
+    df["proj_ppg"] = (k * df.prior_ppg + k_pre * pre.fillna(0) + n * rate) / (k + k_pre + n)
+    df["current_weight"] = np.round(n / (k + k_pre + n), 2)
+
+    # ---- injuries & schedule
+    team_last = cur.groupby("team").week.max() if len(cur) else pd.Series(dtype=float)
+    df["team_last_week"] = df.team.map(team_last)
+    played_last = set(df[df.last_week.notna() & (df.last_week >= df.team_last_week)].player_id)
+    regular = (df.prior_ppg >= df.position.map({"QB": 14, "RB": 8, "WR": 8, "TE": 6})) & (df.prior_games_eff >= 6)
+    missed_last = set(df[regular & df.team_last_week.notna() &
+                         (df.last_week.isna() | (df.last_week < df.team_last_week))].player_id)
+    signals = list(extra_signals or [])
+    signals += injuries.roster_signals(players, played_last)
+    signals += injuries.report_signals(inj, report_dates(sched, season))
+    now = pd.Timestamp.now(tz="UTC").isoformat()
+    # dated at the game itself (late evening ET), so news from the days after it is newer
+    gs = sched[(sched.season == season) & (sched.game_type == "REG")]
+    game_day = {}
+    for g in gs.itertuples(index=False):
+        t = pd.Timestamp(g.gameday).tz_localize("America/New_York").replace(hour=23).tz_convert("UTC").isoformat()
+        game_day[(g.home_team, int(g.week))] = game_day[(g.away_team, int(g.week))] = t
+    for pid in missed_last:
+        row = df.loc[df.player_id == pid].iloc[0]
+        when = game_day.get((row.team, int(row.team_last_week)), now)
+        signals.append(injuries.Signal(pid, "INACTIVE", injuries.BASE_GAMES["INACTIVE"],
+                                       "Did not play in his team's last game", "Box scores", when,
+                                       int(df.loc[df.player_id == pid, "team_last_week"].iloc[0])))
+    flagged = {s.player_id for s in signals if s.status in ("LEFT GAME", "RETURNED")}
+    signals += injuries.snap_collapse(cur, flagged)
+    universe = set(df.player_id)
+    signals = [s for s in signals if s.player_id in universe]
+    final = inj[inj.report_status.notna()] if not inj.empty else inj
+    report_weeks = final.groupby("team").week.max().to_dict() if len(final) else {}
+    last_played = dict(zip(df.player_id, df.last_week.fillna(0)))
+    practice_weeks = inj.groupby("team").week.max().to_dict() if not inj.empty else {}
+    inj_df = injuries.combine(signals, report_weeks, dict(zip(df.player_id, df.team)), last_played,
+                              team_last.to_dict(), plan_week=rem.get("plan_week", cur_week),
+                              practice_weeks=practice_weeks)
+    df = df.merge(inj_df, on="player_id", how="left")
+    weeks = rem.get("weeks", {})
+    df["rem_weeks"] = df.team.map(lambda t: len(weeks.get(t, [])))
+    df = market_injury_check(df, fp)
+    plan_week = rem.get("plan_week", cur_week)
+    df["plays_this_week"] = df.team.map(lambda t: plan_week in weeks.get(t, []))
+    df["on_bye"] = ~df.plays_this_week & (df.rem_weeks > 0)
+    missed = df.exp_missed_raw.fillna(0)
+    df["exp_missed"] = np.minimum(missed, df.rem_weeks)
+    df["play_prob"] = np.where(df.plays_this_week, 1 - df.p_miss_next.fillna(0).clip(0, 1), 0.0)
+    df["ros_games"] = (df.rem_weeks - df.exp_missed).clip(lower=0)
+
+    # ---- quarterback context: who is throwing the ball changes everyone around him
+    quality, league_pass = passing_quality(cur, hist)
+    qbc = team_qb_context(df, cur, quality, league_pass)
+    df["qb"] = df.team.map(lambda t: qbc.get(t, {}).get("qb"))
+    df["qb_pass_ppg"] = df.team.map(lambda t: qbc.get(t, {}).get("qb_pass_ppg"))
+    df["qb_change"] = df.team.map(lambda t: bool(qbc.get(t, {}).get("starter_out")))
+    df["qb_starter"] = [pid == qbc.get(t, {}).get("qb_id") and qbc.get(t, {}).get("starter_out", False)
+                        for pid, t in zip(df.player_id, df.team)]
+    share = df.position.map(PASS_SHARE).fillna(0)
+    tf = df.team.map(lambda t: qbc.get(t, {}).get("qb_factor", 1.0)).astype(float)
+    tw = df.team.map(lambda t: qbc.get(t, {}).get("qb_factor_week", 1.0)).astype(float)
+    df["team_qb_factor"], df["team_qb_factor_week"] = tf, tw
+    df["qb_was"] = df.team.map(lambda t: qbc.get(t, {}).get("incumbent"))
+    df["qb_factor"] = tf ** share           # rest of season
+    df["qb_factor_week"] = tw ** share      # next game only
+    df["proj_ppg_healthy_qb"] = df.proj_ppg
+    df["proj_ppg"] = df.proj_ppg * df.qb_factor
+    df["ros_points"] = df.proj_ppg * df.ros_games
+
+    hist_last = hist[hist.season == season - 1] if not hist.empty else hist
+    mf = matchup_factors(cur, hist_last)
+    opp = rem.get("opp", {})
+    df["opponent"] = df.team.map(opp)
+    df["matchup"] = [mf.get((o, pp), 1.0) if isinstance(o, str) else 1.0 for o, pp in zip(df.opponent, df.position)]
+    # Vegas: this week's implied team total vs the team's usual, when a line is posted.
+    # It replaces the defense matchup factor, and already prices in part of a QB change.
+    lines = lines or {}
+    df["imp_total"] = df.team.map(lambda t: (lines.get(t) or {}).get("implied"))
+    df["imp_avg"] = df.team.map(lambda t: (lines.get(t) or {}).get("team_avg"))
+    df["spread"] = df.team.map(lambda t: (lines.get(t) or {}).get("spread"))
+    vf = [vegas.factor(pp, lines.get(t)) if pw else None
+          for pp, t, pw in zip(df.position, df.team, df.plays_this_week)]
+    df["vegas"] = pd.array(vf, dtype="Float64").astype(float)
+    has_line = df.vegas.notna()
+    overlap = df.position.map(vegas.QB_OVERLAP).fillna(0)
+    qb_week = np.where(has_line, df.qb_factor_week ** (1 - overlap), df.qb_factor_week)
+    df["game_factor"] = np.where(has_line, df.vegas, df.matchup)
+    df["week_proj"] = df.proj_ppg_healthy_qb * qb_week * df.game_factor * df.play_prob
+
+    df["trend"] = np.select([df.l3_ppg > df.proj_ppg * 1.2, df.l3_ppg < df.proj_ppg * 0.8], ["up", "down"], "")
+    df = df.drop(columns=[c for c in ["display_name", "latest_team", "headshot_x", "headshot_y",
+                                      "birth_date", "status"] if c in df.columns])
+    df = df[df.proj_ppg.notna()]
+    meta = {"season": season, "week": cur_week, "plan_week": plan_week}
+    return df.reset_index(drop=True), meta
+
+
+ROLE_FULL = {"QB": 0.70, "RB": 0.45, "WR": 0.60, "TE": 0.55}      # snaps a real starter plays
+OPP_FULL = {"QB": 30.0, "RB": 14.0, "WR": 7.0, "TE": 5.0}         # touches + targets per game
+
+
+def role_share(df: pd.DataFrame) -> pd.Series:
+    """How big his role is right now, from the last two games (season average as backup)."""
+    return df[["l2_snap", "l3_snap", "snap_pct"]].max(axis=1)
+
+
+def opportunity_share(df: pd.DataFrame) -> pd.Series:
+    """Touches and targets per game against what a starter at the position gets.
+
+    Some real starters play few snaps: a committee back with 20 carries, a receiver
+    in a rotation. Counting their actual work keeps the role ceiling from punishing them,
+    and it covers players whose snap counts are missing.
+    """
+    games = df.all_games.fillna(0).clip(lower=1)
+    opp = (df.touches.fillna(0) + df.targets.fillna(0)) / games
+    qb = df.position == "QB"
+    opp = np.where(qb, (df.pass_yds.fillna(0) / 7.0 + df.touches.fillna(0)) / games, opp)
+    return pd.Series(opp, index=df.index) / df.position.map(OPP_FULL)
+
+
+def apply_role_ceiling(df: pd.DataFrame, repl: dict) -> pd.DataFrame:
+    """A player can only score with the opportunities he actually gets.
+
+    Fantasy points come from touches and targets, not talent in the abstract. A
+    former starter now playing 10% of snaps cannot produce like his history says,
+    so his value above replacement is scaled by the role he currently holds. Players
+    who haven't played yet this season are left alone (their situation is unknown),
+    and the injury signals handle anyone who is hurt.
+    """
+    df = df.copy()
+    role = role_share(df)
+    snap_factor = role / df.position.map(ROLE_FULL)
+    factor = np.clip(np.fmax(snap_factor, opportunity_share(df)), 0.0, 1.0)
+    played = df.all_games.fillna(0) > 0
+    known_role = played & pd.notna(factor)
+    if "qb_starter" in df:  # in line to start: his old bench role says nothing
+        factor = np.where(df.qb_starter.fillna(False), 1.0, factor)
+    base = df.position.map(repl)
+    capped = base + (df.proj_ppg - base) * factor
+    df["role_share"] = role
+    df["role_factor"] = np.where(known_role, factor, np.nan)
+    df["proj_ppg_raw"] = df.proj_ppg
+    df["proj_ppg"] = np.where(known_role & (capped < df.proj_ppg), capped, df.proj_ppg)
+    df["ros_points"] = df.proj_ppg * df.ros_games
+    return df
+
+
+# ---------------------------------------------------------------- handcuffs
+RB1_MISS_RATE = 0.16     # 2023-25: RB1s missed 16% of games from week 5 on
+HANDCUFF_SHARE = 0.75    # 2023-25: the backup scored 70-87% of the starter's output when he sat
+
+
+def handcuffs(df: pd.DataFrame, fill_ins: list | None = None, chart: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Tag each team's backup running back as the handcuff to its starter.
+
+    Starter = the back with the most touches per game this season (history if none yet).
+    Handcuff = whoever actually took over when the starter left a game; otherwise the next
+    back on the current depth chart (Ourlads/ESPN); otherwise the next back by touches.
+    Each handcuff gets the points he'd score while filling in (75% of the starter's rate,
+    or his own projection if higher) and the number of games the starter is expected to
+    miss: games already on the injury report plus the normal 16% rate on the rest.
+
+    Next man up: when the starter is likely out THIS week, the handcuff's weekly projection
+    moves toward that fill-in rate in proportion to the chance the starter sits. (Measured:
+    2023-25 backups produced 75% of the starter's rate in the games he missed.) Tight ends
+    get the same "next man up" note from the depth chart, without the projection change,
+    since there is no comparable measurement for them.
+    """
+    df = df.copy()
+    for c in ("hc_of", "hc_of_name", "hc_contingent", "hc_out_games", "next_up_for"):
+        df[c] = np.nan if c in ("hc_contingent", "hc_out_games") else None
+    fills = {f["injured_id"]: f["fill_in_id"] for f in (fill_ins or []) if f.get("position") == "RB"}
+    rb = df[df.position == "RB"].copy()
+    rb["tpg"] = (rb.touches.fillna(0) / rb.all_games.clip(lower=1)).where(rb.all_games.fillna(0) > 0,
+                                                                          rb.prior_ppg / 2)
+    for team, g in rb.groupby("team"):
+        g = g.sort_values(["tpg", "proj_ppg"], ascending=False)
+        if len(g) < 2:
+            continue
+        s1 = g.iloc[0]
+        cand = g.iloc[1:]
+        cand_ids = set(cand.player_id)
+        hurt = set(cand[cand.exp_missed.fillna(0) >= 1].player_id)
+        fid = fills.get(s1.player_id)
+        dc = None
+        if chart is not None and len(chart):
+            from .depth import next_up
+            dc = next_up(chart, team, "RB", {s1.player_id} | hurt)
+        healthy_cand = cand[~cand.player_id.isin(hurt)]
+        if healthy_cand.empty:
+            continue
+        if fid in cand_ids and fid not in hurt:
+            h = cand[cand.player_id == fid].iloc[0]
+        elif dc in cand_ids:
+            h = cand[cand.player_id == dc].iloc[0]
+        else:
+            h = healthy_cand.iloc[0]
+        if h.tpg < 1 and h.proj_ppg < 3 and dc != h.player_id:
+            continue  # no real backup identified
+        healthy = max(float(s1.ros_games or 0), 0.0)
+        out_games = float(s1.exp_missed or 0) + RB1_MISS_RATE * healthy
+        s1_rate = float(s1.proj_ppg_healthy_qb if pd.notna(s1.get("proj_ppg_healthy_qb")) else s1.proj_ppg)
+        cont = max(float(h.proj_ppg), HANDCUFF_SHARE * s1_rate)
+        i = df.index[df.player_id == h.player_id][0]
+        df.at[i, "hc_of"], df.at[i, "hc_of_name"] = s1.player_id, s1["name"]
+        df.at[i, "hc_contingent"], df.at[i, "hc_out_games"] = round(cont, 2), round(out_games, 2)
+        # next man up this week
+        p_out = (1 - float(s1.play_prob or 0)) if bool(s1.get("plays_this_week", True)) else 0.0
+        backup_plays = bool(df.at[i, "plays_this_week"]) if "plays_this_week" in df else True
+        if p_out >= 0.25 and backup_plays:
+            wp = float(df.at[i, "week_proj"] or 0)
+            ratio = wp / float(df.at[i, "proj_ppg"]) if float(df.at[i, "proj_ppg"] or 0) > 0 else 1.0
+            fill = HANDCUFF_SHARE * s1_rate * ratio
+            if fill > wp:
+                df.at[i, "week_proj"] = round(wp + p_out * (fill - wp), 2)
+            if p_out >= 0.5:
+                df.at[i, "next_up_for"] = s1["name"]
+    # tight ends: depth-chart next man up when the starter is likely out (note only)
+    if chart is not None and len(chart):
+        from .depth import next_up
+        te = df[df.position == "TE"]
+        for team, g in te.groupby("team"):
+            c = chart[(chart.team == team) & (chart.pos == "TE")].sort_values("order")
+            if c.empty:
+                continue
+            starter = c.player_id.iloc[0]
+            srow = g[g.player_id == starter]
+            if srow.empty or float(srow.play_prob.iloc[0] or 0) > 0.5 or not bool(srow.plays_this_week.iloc[0]):
+                continue
+            nxt = next_up(chart, team, "TE", {starter} | set(g[g.exp_missed.fillna(0) >= 1].player_id))
+            if nxt in set(g.player_id):
+                df.loc[df.player_id == nxt, "next_up_for"] = srow["name"].iloc[0]
+    return df
+
+
+def weekly_points(df: pd.DataFrame, rem: dict, plan_week: int, last_week: int) -> pd.DataFrame:
+    """Expected points in each remaining fantasy week, for week-by-week lineups.
+
+    Week 1 (the week being planned) uses next week's projection, which already has
+    the Vegas total, this week's injury odds and any next-man-up role. Later weeks use
+    the rest-of-season rate, zero on byes, and the expected games missed spread over
+    the next games (out ~3 games -> missing weeks 2-3 after this one, partly the 4th).
+    Trades and waivers sum the best lineup of every week, so a bench player gets credit
+    for covering byes and injuries, and a player on bye this week isn't written off.
+    `wk_mkt` is the same pattern scaled to the consensus (market) rest-of-season value.
+    """
+    df = df.copy()
+    weeks = list(range(plan_week, last_week + 1))
+    sched = rem.get("weeks", {})
+    pts, mkt = [], []
+    for r in df.itertuples(index=False):
+        plays = set(sched.get(r.team, [])) if isinstance(r.team, str) else set()
+        rate = float(r.proj_ppg or 0)
+        missed = float(r.exp_missed or 0) if pd.notna(r.exp_missed) else 0.0
+        v, k = [], 0
+        for w in weeks:
+            if w not in plays:
+                v.append(0.0)
+                continue
+            if k == 0 and w == plan_week:
+                v.append(float(r.week_proj or 0) if pd.notna(r.week_proj) else 0.0)
+            else:
+                v.append(rate * (1 - min(max(missed - k, 0.0), 1.0)))
+            k += 1
+        tot = sum(v)
+        m = r.market_ros_points if pd.notna(r.market_ros_points) else r.ros_points
+        scale = (float(m) / tot) if tot > 0 and pd.notna(m) else 1.0
+        pts.append([round(x, 2) for x in v])
+        mkt.append([round(x * scale, 2) for x in v])
+    df["wk_pts"], df["wk_mkt"] = pts, mkt
+    return df
+
+
+def handcuff_bonus(rows: list[dict], lineup: dict, col: str, weeks: float) -> tuple[float, list]:
+    """Extra points per week a roster gets from its handcuffs.
+
+    If you own the starter too, the handcuff fills YOUR hole when the starter sits, so he is
+    worth his fill-in rate minus your next-best bench option. If you don't own the starter,
+    he is only worth something when his fill-in rate beats your weakest RB/FLEX starter.
+    """
+    from .advisor import best_lineup  # local import to avoid a cycle
+    ids = {r["player_id"] for r in rows}
+    _, starters = best_lineup(rows, lineup, col)
+    total, notes = 0.0, []
+    for h in rows:
+        s = h.get("hc_of")
+        if not s or pd.isna(h.get("hc_contingent")):
+            continue
+        cont, out_g = float(h["hc_contingent"]), float(h["hc_out_games"] or 0)
+        if s in ids:
+            alts = [(r.get(col) or 0) for r in rows if r["player_id"] not in starters and r["player_id"] != h["player_id"]
+                    and r["position"] in ("RB", "WR", "TE")]
+            base = max(alts, default=0.0)
+            own = True
+        else:
+            st = [(r.get(col) or 0) for r in rows if r["player_id"] in starters and r["position"] in ("RB", "WR", "TE")]
+            base = min(st, default=0.0)
+            own = False
+        rate = cont if col != "mkt_ppw" else cont  # fill-in rate is per game either way
+        gain = max(0.0, rate - base) * out_g
+        if gain > 0:
+            total += gain
+            notes.append({"player_id": h["player_id"], "name": h["name"], "starter": h.get("hc_of_name"),
+                          "owns_starter": own, "points": round(gain, 1)})
+    return total / max(weeks, 1), notes
+
+
+def replacement_levels(df: pd.DataFrame, teams: int, lineup: dict, col="proj_ppg") -> dict:
+    """PPG of the best player left after every team fills its starting lineup."""
+    pool = df[df.ros_games > 0].sort_values(col, ascending=False)
+    taken = set()
+    for pos in config.POSITIONS:
+        n = teams * lineup.get(pos, 0)
+        taken |= set(pool[pool.position == pos].head(n).player_id)
+    flex = teams * lineup.get("FLEX", 0)
+    rest = pool[~pool.player_id.isin(taken) & pool.position.isin(["RB", "WR", "TE"])]
+    taken |= set(rest.head(flex).player_id)
+    sf = teams * lineup.get("OP", 0)
+    rest = pool[~pool.player_id.isin(taken)]
+    taken |= set(rest.head(sf).player_id)
+    out = {}
+    for pos in config.POSITIONS:
+        left = pool[(pool.position == pos) & ~pool.player_id.isin(taken)]
+        out[pos] = float(left[col].head(3).mean()) if len(left) else 0.0
+    return out
+
+
+def add_value(df: pd.DataFrame, teams: int, lineup: dict) -> tuple[pd.DataFrame, dict]:
+    # first pass sets replacement level, then the role ceiling is applied against it
+    repl = replacement_levels(df, teams, lineup)
+    df = apply_role_ceiling(df, repl)
+    repl = replacement_levels(df, teams, lineup)
+    df = df.copy()
+    df["vor_ppg"] = df.proj_ppg - df.position.map(repl)
+    df["ros_value"] = df.vor_ppg * df.ros_games
+    df["pos_rank"] = df.groupby("position").proj_ppg.rank(ascending=False, method="first").astype(int)
+    df["ovr_rank"] = df.ros_value.rank(ascending=False, method="first").astype(int)
+    return df, repl

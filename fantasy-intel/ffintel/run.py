@@ -1,0 +1,307 @@
+"""Full refresh: download data -> rate players -> compare to consensus -> advise -> build site."""
+import datetime as dt
+import json
+import math
+import sys
+import traceback
+
+import numpy as np
+import pandas as pd
+
+from . import advanced, advisor, config, consensus, depth, dstk, espn, injuries, model, playoffs, report, sources, usage, vegas, web
+
+
+def log(*a):
+    print(f"[{dt.datetime.now():%H:%M:%S}]", *a, flush=True)
+
+
+def clean(o):
+    """Make numpy/pandas values JSON-safe."""
+    if isinstance(o, dict):
+        return {k: clean(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple, set)):
+        return [clean(v) for v in o]
+    if isinstance(o, (np.integer,)):
+        return int(o)
+    if isinstance(o, (np.floating, float)):
+        f = float(o)
+        return None if math.isnan(f) or math.isinf(f) else round(f, 3)
+    if isinstance(o, (np.bool_,)):
+        return bool(o)
+    if o is None or isinstance(o, (str, bool, int)):
+        return o
+    try:
+        if pd.isna(o):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return o
+
+
+PLAYER_COLS = ["player_id", "name", "position", "team", "age", "headshot", "games", "all_games", "proj_ppg",
+               "prior_ppg", "prior_source", "prior_weight_games", "preseason_ppg", "preseason_weight_games", "current_weight", "cur_ppg", "cur_xfp",
+               "l3_ppg", "weekly_pts", "role_share", "role_factor", "proj_ppg_raw", "trend", "role_change", "role_growth", "pts_total", "snap_pct", "l2_snap",
+               "target_share", "l3_tshare", "air_yards_share", "wopr", "targets", "receptions", "rec_yds",
+               "carries", "rush_yds", "pass_yds", "pass_tds", "ints", "tds", "touches", "rz_targets",
+               "ez_targets", "rz_carries", "i10_carries", "rz_tgt_share", "rz_rush_share", "xfp_total",
+               "inj_status", "inj_detail", "inj_source", "inj_updated", "inj_signals", "fill_in_for", "play_prob", "on_bye", "exp_missed", "ros_games", "ros_points",
+               "qb", "qb_was", "qb_pass_ppg", "qb_factor", "qb_factor_week", "team_qb_factor", "qb_change", "qb_starter", "opponent", "matchup", "imp_total", "imp_avg", "spread", "vegas", "game_factor", "week_proj", "vor_ppg", "ros_value", "pos_rank", "ovr_rank",
+               "own_pos_rank", "consensus_pos_rank", "consensus_sources", "fp_ros", "fp_week", "espn_proj",
+               "fp_ros_best", "fp_ros_worst", "market_ros_points", "value_gap", "gap_ppg", "rank_gap",
+               "verdict", "note", "star", "hc_of", "hc_of_name", "hc_contingent", "hc_out_games", "next_up_for", "wk_pts", "wk_mkt", "opps", "metrics", "scale",
+               "depth_label", "depth_source", "depth_move", "depth_dir", "route_pct", "routes_pg", "tprr", "yprr",
+               "fr_share", "separation", "slot_rate", "opp_share", "wopp_pg", "route_weeks", "adv_notes", "pp_url", "pp_updated", "owner", "owner_name", "pct_owned", "pct_change"]
+
+
+def main():
+    season = config.SEASON
+    log(f"Season {season}")
+    players = sources.players()
+    try:
+        ids = sources.player_ids()
+    except Exception as e:
+        log("ID map unavailable:", e)
+        ids = None
+    sched = sources.schedule()
+    cur_week, rem = model.remaining_schedule(sched, season)
+    plan_week = rem["plan_week"]
+    log(f"Current week {cur_week}; planning lineups for week {plan_week}")
+    try:
+        lines, _, lines_status = vegas.lines_for_week(sched, season, plan_week)
+    except Exception as e:
+        lines, lines_status = {}, f"unavailable ({type(e).__name__})"
+    log(f"Vegas lines: {lines_status}")
+
+    league, league_error = None, ""
+    if config.MOCK_LEAGUE:
+        pass
+    else:
+        try:
+            league = espn.fetch(players, ids, season, plan_week)
+            log(f"ESPN league '{league.name}': {league.n_teams} teams, my team id {league.my_team_id}")
+            if league.error:
+                log(league.error)
+        except Exception as e:
+            league_error = str(e)
+            log("ESPN league unavailable:", e)
+    rec_pts = league.rec_pts if league else config.DEFAULT_REC_PTS
+
+    log("Fitting expected-points model on past seasons")
+    hist_pbp = pd.concat([sources.pbp(s) for s in config.HISTORY_SEASONS], ignore_index=True)
+    xfp = usage.XFPModel(hist_pbp)
+    del hist_pbp
+
+    log("Building weekly usage tables")
+    hist = pd.concat([usage.weekly_table(s, xfp, rec_pts, players) for s in config.HISTORY_SEASONS],
+                     ignore_index=True)
+    cur = usage.weekly_table(season, xfp, rec_pts, players)
+    log(f"Current season rows: {len(cur)}; history rows: {len(hist)}")
+
+    inj = sources.injuries(season)
+    log("Gathering injury signals")
+    skill = set(players[players.position.isin(config.POSITIONS)].gsis_id)
+    sig, short_games, fill_ins = injuries.in_game(sources.pbp(season), players, season, skill)
+    log(f"  play-by-play: {sum(s.status == 'LEFT GAME' for s in sig)} left games injured, "
+        f"{sum(s.status == 'RETURNED' for s in sig)} returned")
+    pbp_cur = sources.pbp(season)
+    exits = injuries.early_exits(pbp_cur, cur, {x.player_id for x in sig})
+    sig += exits
+    log(f"  early exits without a logged injury: {len(exits)}")
+    feed_status = {"Play-by-play": f"{len(sig)} in-game injuries"}
+    espn_ids = espn._id_map(players, ids)
+    nidx = injuries.name_index(players)
+    game_dates = model.team_game_dates(sched, season)
+    for label, fn in (("ESPN injury desk", lambda: injuries.espn_feed(espn_ids, nidx, game_dates)),
+                      ("Sleeper", lambda: injuries.sleeper_feed(ids, nidx)),
+                      ("ESPN news", lambda: injuries.news_feed(espn_ids, nidx)),
+                      ("Rotoworld (beat reporters)", lambda: injuries.rotoworld_feed(nidx)),
+                      ("News wires", lambda: injuries.rss_feed(injuries.unique_names(players)))):
+        try:
+            got = fn()
+            sig += got
+            feed_status[label] = f"{len(got)} players"
+            log(f"  {label}: {len(got)} signals")
+        except Exception as e:
+            feed_status[label] = f"unavailable ({e if isinstance(e, RuntimeError) else type(e).__name__})"
+            log(f"  {label} unavailable: {e}")
+    if league:
+        sig += injuries.league_signals(league.injuries)
+        feed_status["Your ESPN league"] = f"{len(league.injuries)} players"
+    log("Reading depth charts")
+    try:
+        chart, depth_moves, depth_status = depth.build(season, nidx, players)
+    except Exception as e:
+        chart, depth_moves, depth_status = pd.DataFrame(), [], {"Depth charts": f"unavailable ({type(e).__name__})"}
+    log(f"  depth charts: {depth_status}; {len(depth_moves)} moves")
+    fp = consensus.fantasypros_ranks()
+    df, meta = model.build_ratings(cur, hist, players, sched, inj, sig, short_games, fp=fp,
+                                   draft_ranks=league.draft_ranks if league else None,
+                                   drafted=league.drafted if league else None, lines=lines)
+    names = dict(zip(players.gsis_id, players.display_name))
+    rated = dict(zip(df.player_id, df.proj_ppg))
+    fill_ins = [f for f in fill_ins if f["injured_id"] in rated]
+    df["fill_in_for"] = df.player_id.map({f["fill_in_id"]: f["injured"] for f in fill_ins})
+
+    if config.MOCK_LEAGUE:
+        league = espn.mock(df, plan_week=plan_week)
+    teams = league.n_teams if league else config.DEFAULT_TEAMS
+    lineup = league.lineup if league else config.DEFAULT_LINEUP
+    df, repl = model.add_value(df, teams, lineup)
+    df = model.handcuffs(df, fill_ins, chart)
+    # depth chart spot and recent moves
+    if len(chart):
+        spot = chart.drop_duplicates("player_id").set_index("player_id")
+        df["depth_label"] = df.player_id.map(spot.label)
+        df["depth_source"] = df.player_id.map(spot.source)
+    mv = {m["player_id"]: m for m in depth_moves}
+    df["depth_move"] = df.player_id.map(lambda p: f"{mv[p]['from']} → {mv[p]['to']}" if p in mv else None)
+    df["depth_dir"] = df.player_id.map(lambda p: mv[p]["direction"] if p in mv else None)
+    rated_ids = set(df.player_id)
+    depth_moves = [m for m in depth_moves if m["player_id"] in rated_ids]
+    df = consensus.composite(df, league.projections if league else None)
+    log(f"Rated {len(df)} players; {(df.verdict != '').sum()} flagged over/undervalued")
+
+    log("Advanced stats (PlayerProfiler)")
+    rostered = []
+    if league:
+        for entries in league.rosters.values():
+            rostered += [e["player_id"] for e in entries]
+    by_value = list(df.sort_values("ros_value", ascending=False).player_id)
+    owned = set(rostered)
+    free = [p for p in by_value if p not in owned][:60]
+    prio = list(dict.fromkeys([p for p in rostered if p in rated_ids] + free + by_value[:200]))
+    try:
+        adv = advanced.fetch(df, prio)
+    except Exception as e:
+        adv = {}
+        log("  PlayerProfiler unavailable:", e)
+    log(f"  advanced stats for {len(adv)} players")
+    for k in ("route_pct", "routes_pg", "tprr", "yprr", "fr_share", "separation", "slot_rate", "opp_share",
+              "wopp_pg", "pp_url", "pp_updated"):
+        df[k] = df.player_id.map(lambda p, k=k: adv.get(p, {}).get(k))
+    df["route_weeks"] = df.player_id.map(lambda p: adv.get(p, {}).get("route_weeks"))
+    df["adv_notes"] = [advanced.reasons(adv.get(p), pos) for p, pos in zip(df.player_id, df.position)]
+
+    weeks_left = max(1, config.LAST_FANTASY_WEEK - plan_week + 1)
+    df = model.weekly_points(df, rem, plan_week, config.LAST_FANTASY_WEEK)
+    out = {"generated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
+           "season": season, "week": cur_week, "plan_week": plan_week, "weeks_left": weeks_left, "rec_pts": rec_pts,
+           "replacement": repl, "lineup": lineup, "teams": teams,
+           "data_through_week": int(cur.week.max()) if len(cur) else 0,
+           "league": None, "league_error": league_error,
+           "injury_feeds": feed_status, "fill_ins": fill_ins,
+           "depth_moves": depth_moves, "depth_status": depth_status,
+           "lines": {t: {k: v for k, v in ln.items()} for t, ln in lines.items()}, "lines_status": lines_status,
+           "web_status": web.summary(),
+           "data_feeds": {k: v for k, v in sources.STATUS.items() if v != "ok"},
+           "qb_changes": sorted(({"team": r.team, "qb": r.qb, "was": r.qb_was, "factor": r.team_qb_factor,
+                                  "pass_ppg": r.qb_pass_ppg, "qb_id": r.player_id}
+                                 for r in df[df.qb_change & (df.position == "QB") & df.qb_starter].itertuples()),
+                                key=lambda x: x["factor"])}
+
+    # ---- team defenses and kickers (projected week by week against each opponent)
+    log("Team defenses and kickers")
+    units = pd.DataFrame()
+    rostered_k = [e["player_id"] for es in (league.rosters.values() if league else []) for e in es
+                  if e["pos"] == "K" and e.get("player_id")]
+    try:
+        units, unit_metrics = dstk.build(season, plan_week, rem, lines, players,
+                                         league.units if league else None, rostered_k)
+        out["unit_metrics"] = unit_metrics.to_dict("records")
+        log(f"  {int((units.position == 'D/ST').sum())} defenses, {int((units.position == 'K').sum())} kickers")
+    except Exception as e:
+        log("  D/ST and kicker projections unavailable:", repr(e))
+    if league and len(units):
+        kick_by_team = dict(zip(units[units.position == "K"].team, units[units.position == "K"].player_id))
+        for entries in league.rosters.values():
+            for e in entries:
+                if e["pos"] == "K" and not e.get("player_id") and e.get("team"):
+                    e["player_id"] = kick_by_team.get(e["team"])  # demo league: its kicker is that team's kicker
+
+    if league and league.my_team_id:
+        adv = advisor.Advisor(df, league, weeks_left)
+        df = adv.df.reset_index(drop=True)
+        names = {k: v["name"] for k, v in league.teams.items()}
+        df["owner_name"] = df.owner.map(names)
+        df["pct_owned"] = df.player_id.map(lambda p: league.ownership.get(p, (None, None))[0])
+        df["pct_change"] = df.player_id.map(lambda p: league.ownership.get(p, (None, None))[1])
+        log("Building waiver and trade advice")
+        out["league"] = {
+            "name": league.name, "mock": league.mock, "my_team": league.teams[league.my_team_id]["name"],
+            "team": adv.my_team(), "waivers": adv.waivers(), "stashes": adv.waivers(limit=10, stashes=True),
+            "trades": adv.trade_lists(),
+            "trade_ideas": adv.trade_ideas(), "partners": adv.partners(), "note": league.error,
+            "slots": league.slots_full or {**lineup, "D/ST": 1, "K": 1},
+            "rosters": {str(tid): [{"player_id": e["player_id"], "name": e["name"], "pos": e["pos"], "slot": e["slot"],
+                                    "espn_week_proj": e.get("espn_week_proj", league.espn_week_proj.get(e.get("espn_id")))}
+                                   for e in entries]
+                        for tid, entries in league.rosters.items()}}
+    elif league:
+        listing = ", ".join(f"{k} = {v['name']}" for k, v in league.teams.items())
+        out["league_error"] = ("Connected to ESPN but couldn't tell which team is yours. "
+                               f"Set the ESPN_TEAM_ID secret to your team's number: {listing}")
+        log(out["league_error"])
+
+    if len(units):
+        owner = {e["player_id"]: tid for tid, es in (league.rosters.items() if league else []) for e in es if e.get("player_id")}
+        units["owner"] = units.player_id.map(owner)
+        if league:
+            units["owner_name"] = units.owner.map({k: v["name"] for k, v in league.teams.items()})
+            units["pct_owned"] = units.player_id.map(lambda p: league.ownership.get(p, (None, None))[0])
+            units["pct_change"] = units.player_id.map(lambda p: league.ownership.get(p, (None, None))[1])
+        units["ros_value"] = units.ros_points
+        df = pd.concat([df, units], ignore_index=True)
+
+    # ---- playoff odds: simulate the rest of the regular season
+    if out["league"] and league and league.schedule:
+        log("Simulating the rest of the season")
+        by_id = {r["player_id"]: r for r in df[["player_id", "position", "wk_pts", "scale"]].to_dict("records")
+                 if isinstance(r.get("wk_pts"), list)}
+        rows_by_team = {}
+        for tid, entries in league.rosters.items():
+            rows_by_team[tid] = [{"id": e["player_id"], "pos": by_id[e["player_id"]]["position"],
+                                  "wk": by_id[e["player_id"]]["wk_pts"],
+                                  "scale": by_id[e["player_id"]].get("scale") if pd.notna(by_id[e["player_id"]].get("scale")) else 1.0}
+                                 for e in entries if e.get("player_id") in by_id]
+        try:
+            out["league"]["playoffs"] = playoffs.simulate(league, rows_by_team, plan_week)
+            out["league"]["standings"] = {str(t): r for t, r in league.records.items()}
+            out["league"]["divisions"] = {str(t): league.division_names.get(d, f"Division {d}") for t, d in league.divisions.items()}
+            out["league"]["rosters"] = {str(tid): [{"player_id": e["player_id"], "name": e["name"], "pos": e["pos"], "slot": e["slot"],
+                                                     "espn_week_proj": e.get("espn_week_proj", league.espn_week_proj.get(e.get("espn_id")))}
+                                                    for e in entries] for tid, entries in league.rosters.items()}
+            po = out["league"]["playoffs"]["teams"]
+            log("  " + ", ".join(f"{league.teams[t]['name'][:14]} {v['playoff_pct']:.0%}" for t, v in
+                                 sorted(po.items(), key=lambda x: -x[1]["playoff_pct"])))
+        except Exception as e:
+            log("  playoff simulation failed:", repr(e))
+
+    for c in PLAYER_COLS:
+        if c not in df:
+            df[c] = None
+    df = df.sort_values("ros_value", ascending=False)
+    out["players"] = df[PLAYER_COLS].to_dict("records")
+    if out["league"]:
+        keep = set(PLAYER_COLS) | {"espn_slot", "start_this_week", "core_starter", "lineup_note", "gain_week",
+                                    "score", "drop", "waiver_status", "why", "owner_name", "ros_ppw", "mkt_ppw"}
+        L = out["league"]
+        L["team"]["players"] = [{k: v for k, v in p.items() if k in keep} for p in L["team"]["players"]]
+        for k in ("waivers", "stashes"):
+            L[k] = [{k2: v for k2, v in p.items() if k2 in keep} for p in L[k]]
+        for k in ("buy_low", "sell_high"):
+            L["trades"][k] = [{k2: v for k2, v in p.items() if k2 in keep} for p in L["trades"][k]]
+
+    out = clean(out)
+    config.SITE.mkdir(parents=True, exist_ok=True)
+    (config.SITE / "data.json").write_text(json.dumps(out))
+    df[PLAYER_COLS].to_csv(config.SITE / "rankings.csv", index=False)
+    (config.SITE / "index.html").write_text(report.render(out))
+    log(f"Wrote {config.SITE / 'index.html'}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)
