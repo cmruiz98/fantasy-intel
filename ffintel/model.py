@@ -441,17 +441,28 @@ def build_ratings(cur, hist, players, sched, inj, extra_signals=None, short_game
     n = df.games.values
     rate = np.where(n > 0, rate, 0)
     # Healthy scratches count as zero-point games: a backup who isn't playing
-    # shouldn't coast on a rookie or old-team prior. Games missed injured don't count.
-    team_games = cur.groupby("team").week.nunique() if len(cur) else pd.Series(dtype=float)
-    hurt_weeks = {}
-    if not inj.empty:
-        o = inj[inj.report_status.isin(["Out", "Doubtful"])]
-        hurt_weeks = o.groupby("gsis_id").week.nunique().to_dict()
+    # shouldn't coast on a rookie or old-team prior. Games missed injured don't count,
+    # and that has to be inferred: players on injured reserve drop off the weekly injury
+    # report, so a missed week with no report entry is NOT proof he was healthy. A player
+    # who has a real role whenever he plays (35%+ of snaps), or who has a starter's track
+    # record and hasn't played yet, missed those games hurt (Josh Jacobs, back from IR
+    # with 52% of snaps, was being charged six zero-point games).
+    team_weeks = cur.groupby("team").week.apply(set).to_dict() if len(cur) else {}
+    played = cur.groupby("player_id").week.apply(set).to_dict() if len(cur) else {}
+    listed = {}
+    if not inj.empty:  # on the report that week in any form (Out, Doubtful, Questionable, practice)
+        listed = inj.groupby("gsis_id").week.apply(set).to_dict()
     reserve = players.ngs_status_short_description.astype(str).str.match(r"R/(I|Inj|PUP|NFI)")
     on_reserve = set(players[reserve].gsis_id)
-    dnp = (df.team.map(team_games).fillna(0) - df.all_games.fillna(0)
-           - df.player_id.map(hurt_weeks).fillna(0)).clip(lower=0)
-    dnp = np.where(df.player_id.isin(on_reserve), 0, dnp)
+    # (quarterbacks and rookies who haven't played are usually just inactive backups)
+    starter_prior = (df.prior_ppg.fillna(0) >= df.position.map({"RB": 7, "WR": 7, "TE": 5}).fillna(99)) \
+        & df.prior_source.astype(str).str.contains("history")
+    dnp = []
+    for pid, team, snap, g, sp in zip(df.player_id, df.team, df.snap_pct, df.all_games.fillna(0), starter_prior):
+        missed = team_weeks.get(team, set()) - played.get(pid, set()) - listed.get(pid, set())
+        real_role = (g > 0 and pd.notna(snap) and snap >= 0.35) or (g == 0 and sp)
+        dnp.append(0.0 if (pid in on_reserve or real_role) else float(len(missed)))
+    dnp = np.array(dnp)
     df["healthy_dnp"] = dnp
     rate = np.where(n + dnp > 0, rate * n / np.maximum(n + dnp, 1e-9), 0)
     n = n + dnp

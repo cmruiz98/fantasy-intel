@@ -3,8 +3,9 @@
 Sources (each converted to a positional rank, then averaged with weights):
   - FantasyPros rest-of-season consensus  (aggregates 100+ experts from ESPN, CBS,
     Yahoo, NFL.com, PFF, The Athletic, etc.)                         weight 0.60
-  - ESPN's rest-of-season projections (from your league)             weight 0.25
-  - FantasyPros weekly consensus                                     weight 0.15
+  - ESPN's projections (from your league): its current points per game
+    (this week's projection) times the games each player has left    weight 0.25
+  - FantasyPros weekly consensus (skipped for players on bye or out)  weight 0.15
 Missing sources are skipped and the remaining weights re-normalised.
 """
 import numpy as np
@@ -43,7 +44,14 @@ def composite(df: pd.DataFrame, espn_proj: dict | None) -> pd.DataFrame:
     df = df.copy()
     fp = fantasypros_ranks()
     df = df.merge(fp, on="player_id", how="left")
-    df["espn_proj"] = df.player_id.map(espn_proj or {})
+    # ESPN: its current points-per-game view times the games he has left (byes, injuries)
+    df["espn_rate"] = df.player_id.map(espn_proj or {})
+    df["espn_proj"] = df.espn_rate * df.ros_games.fillna(0)
+    # a WEEKLY rank says nothing about the rest of the season for a player on bye or
+    # sitting out this week (FantasyPros ranks them ~90th), so skip it for them
+    if "fp_week" in df:
+        absent = df.on_bye.fillna(False).astype(bool) | (df.play_prob.fillna(1) < 0.5)
+        df.loc[absent, "fp_week"] = np.nan
     # re-rank each source within position among our player universe so scales match
     for src in ("fp_ros", "fp_week"):
         if src in df:

@@ -8,7 +8,7 @@ import traceback
 import numpy as np
 import pandas as pd
 
-from . import advanced, advisor, config, consensus, depth, espn, injuries, model, report, sources, usage, vegas, web
+from . import advanced, advisor, config, consensus, depth, dstk, espn, injuries, model, playoffs, report, sources, usage, vegas, web
 
 
 def log(*a):
@@ -48,7 +48,7 @@ PLAYER_COLS = ["player_id", "name", "position", "team", "age", "headshot", "game
                "qb", "qb_was", "qb_pass_ppg", "qb_factor", "qb_factor_week", "team_qb_factor", "qb_change", "qb_starter", "opponent", "matchup", "imp_total", "imp_avg", "spread", "vegas", "game_factor", "week_proj", "vor_ppg", "ros_value", "pos_rank", "ovr_rank",
                "own_pos_rank", "consensus_pos_rank", "consensus_sources", "fp_ros", "fp_week", "espn_proj",
                "fp_ros_best", "fp_ros_worst", "market_ros_points", "value_gap", "gap_ppg", "rank_gap",
-               "verdict", "note", "star", "hc_of", "hc_of_name", "hc_contingent", "hc_out_games", "next_up_for", "wk_pts", "wk_mkt",
+               "verdict", "note", "star", "hc_of", "hc_of_name", "hc_contingent", "hc_out_games", "next_up_for", "wk_pts", "wk_mkt", "opps", "metrics", "scale",
                "depth_label", "depth_source", "depth_move", "depth_dir", "route_pct", "routes_pg", "tprr", "yprr",
                "fr_share", "separation", "slot_rate", "opp_share", "wopp_pg", "route_weeks", "adv_notes", "pp_url", "pp_updated", "owner", "owner_name", "pct_owned", "pct_change"]
 
@@ -143,7 +143,7 @@ def main():
     df["fill_in_for"] = df.player_id.map({f["fill_in_id"]: f["injured"] for f in fill_ins})
 
     if config.MOCK_LEAGUE:
-        league = espn.mock(df)
+        league = espn.mock(df, plan_week=plan_week)
     teams = league.n_teams if league else config.DEFAULT_TEAMS
     lineup = league.lineup if league else config.DEFAULT_LINEUP
     df, repl = model.add_value(df, teams, lineup)
@@ -199,6 +199,25 @@ def main():
                                  for r in df[df.qb_change & (df.position == "QB") & df.qb_starter].itertuples()),
                                 key=lambda x: x["factor"])}
 
+    # ---- team defenses and kickers (projected week by week against each opponent)
+    log("Team defenses and kickers")
+    units = pd.DataFrame()
+    rostered_k = [e["player_id"] for es in (league.rosters.values() if league else []) for e in es
+                  if e["pos"] == "K" and e.get("player_id")]
+    try:
+        units, unit_metrics = dstk.build(season, plan_week, rem, lines, players,
+                                         league.units if league else None, rostered_k)
+        out["unit_metrics"] = unit_metrics.to_dict("records")
+        log(f"  {int((units.position == 'D/ST').sum())} defenses, {int((units.position == 'K').sum())} kickers")
+    except Exception as e:
+        log("  D/ST and kicker projections unavailable:", repr(e))
+    if league and len(units):
+        kick_by_team = dict(zip(units[units.position == "K"].team, units[units.position == "K"].player_id))
+        for entries in league.rosters.values():
+            for e in entries:
+                if e["pos"] == "K" and not e.get("player_id") and e.get("team"):
+                    e["player_id"] = kick_by_team.get(e["team"])  # demo league: its kicker is that team's kicker
+
     if league and league.my_team_id:
         adv = advisor.Advisor(df, league, weeks_left)
         df = adv.df.reset_index(drop=True)
@@ -222,6 +241,40 @@ def main():
         out["league_error"] = ("Connected to ESPN but couldn't tell which team is yours. "
                                f"Set the ESPN_TEAM_ID secret to your team's number: {listing}")
         log(out["league_error"])
+
+    if len(units):
+        owner = {e["player_id"]: tid for tid, es in (league.rosters.items() if league else []) for e in es if e.get("player_id")}
+        units["owner"] = units.player_id.map(owner)
+        if league:
+            units["owner_name"] = units.owner.map({k: v["name"] for k, v in league.teams.items()})
+            units["pct_owned"] = units.player_id.map(lambda p: league.ownership.get(p, (None, None))[0])
+            units["pct_change"] = units.player_id.map(lambda p: league.ownership.get(p, (None, None))[1])
+        units["ros_value"] = units.ros_points
+        df = pd.concat([df, units], ignore_index=True)
+
+    # ---- playoff odds: simulate the rest of the regular season
+    if out["league"] and league and league.schedule:
+        log("Simulating the rest of the season")
+        by_id = {r["player_id"]: r for r in df[["player_id", "position", "wk_pts", "scale"]].to_dict("records")
+                 if isinstance(r.get("wk_pts"), list)}
+        rows_by_team = {}
+        for tid, entries in league.rosters.items():
+            rows_by_team[tid] = [{"id": e["player_id"], "pos": by_id[e["player_id"]]["position"],
+                                  "wk": by_id[e["player_id"]]["wk_pts"],
+                                  "scale": by_id[e["player_id"]].get("scale") if pd.notna(by_id[e["player_id"]].get("scale")) else 1.0}
+                                 for e in entries if e.get("player_id") in by_id]
+        try:
+            out["league"]["playoffs"] = playoffs.simulate(league, rows_by_team, plan_week)
+            out["league"]["standings"] = {str(t): r for t, r in league.records.items()}
+            out["league"]["divisions"] = {str(t): league.division_names.get(d, f"Division {d}") for t, d in league.divisions.items()}
+            out["league"]["rosters"] = {str(tid): [{"player_id": e["player_id"], "name": e["name"], "pos": e["pos"], "slot": e["slot"],
+                                                     "espn_week_proj": e.get("espn_week_proj", league.espn_week_proj.get(e.get("espn_id")))}
+                                                    for e in entries] for tid, entries in league.rosters.items()}
+            po = out["league"]["playoffs"]["teams"]
+            log("  " + ", ".join(f"{league.teams[t]['name'][:14]} {v['playoff_pct']:.0%}" for t, v in
+                                 sorted(po.items(), key=lambda x: -x[1]["playoff_pct"])))
+        except Exception as e:
+            log("  playoff simulation failed:", repr(e))
 
     for c in PLAYER_COLS:
         if c not in df:

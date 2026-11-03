@@ -86,6 +86,12 @@ dialog::backdrop{background:rgba(9,11,15,.55)}
 .tahead{display:flex;gap:6px;align-items:center}.tahead select{flex:1;min-width:0}
 .taDest{font-size:12px;padding:3px 6px;border-radius:7px;max-width:100%}
 .flow{padding:6px 0;border-bottom:1px dashed var(--line);font-size:13.5px}
+.obar{height:7px;background:var(--chip);border-radius:4px;overflow:hidden;min-width:56px;margin-top:3px}.obar>div{height:100%;background:var(--acc);border-radius:4px}
+.odds{display:flex;align-items:center;gap:8px;justify-content:flex-end}.odds b{min-width:42px;text-align:right}
+.wk{display:inline-block;font-size:11px;padding:2px 5px;border-radius:6px;margin:1px 1px;background:var(--chip);white-space:nowrap;font-variant-numeric:tabular-nums}
+.wk.g{background:var(--good-bg);color:var(--good)}.wk.b{background:var(--bad-bg);color:var(--bad)}.wk.x{color:var(--mute)}
+.wdist{display:flex;align-items:flex-end;gap:2px;height:46px;margin:6px 0 2px}.wdist>div{flex:1;background:var(--acc);border-radius:2px 2px 0 0;min-height:1px;opacity:.85}
+.wdist>div.cur{opacity:1;outline:2px solid var(--ink-2)}
 .split>div{min-width:0}.split .tw{margin:0;padding:0}
 @media(max-width:900px){.split{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:700px){main{padding:14px 16px 60px}header{padding:18px 16px 8px}nav div{padding:8px 16px}.card{padding:14px}.tw{margin:0 -14px;padding:0 14px}}
@@ -143,6 +149,13 @@ const advRows=p=>{const R=[];const a=(l,v)=>{if(v!=null&&v!=='–')R.push(`<div>
   a('Slot rate',pc(p.slot_rate));a('Opportunity share',pc(p.opp_share));a('Weighted opps / game',p.wopp_pg!=null?f1(p.wopp_pg):null);
   return R.join('')};
 const routeBars=p=>{const w=p.route_weeks||[];if(w.length<2)return '';return `<div class="bars" style="height:56px">${w.map(([k,v])=>`<div style="height:${Math.max(3,v)}%"><span>${Math.round(v)}</span></div>`).join('')}</div><p class="sub">Route participation by week (${w.map(x=>'wk '+x[0]).join(', ')})</p>`};
+const PO=(L&&L.playoffs)||null, POT=PO?PO.teams:{}, STD=(L&&L.standings)||{};
+const tName=tid=>((L&&L.team.strength||[]).find(t=>t.team_id===+tid)||{}).name||('Team '+tid);
+const recStr=tid=>{const r=STD[String(tid)];return r?`${r.w}-${r.l}${r.t?'-'+r.t:''}`:(((L&&L.team.strength||[]).find(t=>t.team_id===+tid)||{}).record||'')};
+const oddsCell=v=>v==null?'–':`<div class="odds"><b class="${v>=0.75?'good':v<=0.2?'bad':''}">${v>=0.995&&v<1?'>99%':v<=0.005&&v>0?'<1%':Math.round(v*100)+'%'}</b><div class="obar" style="width:64px"><div style="width:${Math.round(v*100)}%"></div></div></div>`;
+const pctS=v=>v==null?'–':(v>=0.995&&v<1?'>99%':v<=0.005&&v>0?'<1%':Math.round(v*100)+'%');
+const unitPpw=(tid,pos)=>Math.max(0,...P.filter(p=>p.owner===tid&&p.position===pos).map(p=>(p.ros_points||0)/(D.weeks_left||1)));
+const UNIT_POS=['D/ST','K'];
 const gen=new Date(D.generated);
 $('#meta').textContent=`${D.season} season · week ${D.week}${D.plan_week!==D.week?` (planning for week ${D.plan_week})`:''} · stats through week ${D.data_through_week} · updated ${gen.toLocaleString()}`;
 
@@ -162,7 +175,8 @@ function table(rows,cols,opts={}){
 }
 
 function detail(id){
-  const p=byId[id];if(!p)return;const w=p.weekly_pts||[];const mx=Math.max(1,...w);
+  const p=byId[id];if(!p)return;
+  if(UNIT_POS.includes(p.position)){unitDetail(p);return}const w=p.weekly_pts||[];const mx=Math.max(1,...w);
   $('#dlg').innerHTML=`<button class="x" onclick="dlg.close()">×</button>
   <h2 style="margin:0 0 2px">${esc(p.name)} ${star(p)} ${verdict(p.verdict)}</h2>
   <p class="sub">${p.position} · ${esc(p.team||'')} · age ${f0(p.age)}${p.owner_name?' · on '+esc(p.owner_name):' · free agent'}</p>
@@ -200,6 +214,23 @@ function detail(id){
   $('#dlg').showModal();
 }
 
+function unitDetail(p){
+  const m=p.metrics||{}, d=p.position==='D/ST';
+  const kv=(l,v)=>`<div><span>${l}</span><b>${v==null||v===''?'–':v}</b></div>`;
+  $('#dlg').innerHTML=`<button class="x" onclick="dlg.close()">×</button>
+  <h2 style="margin:0 0 2px">${esc(p.name)}</h2>
+  <p class="sub">${p.position} · ${esc(p.team||'')}${p.owner_name?' · on '+esc(p.owner_name):' · free agent'}${p.note?' · '+esc(p.note):''}</p>
+  <div class="grid" style="margin-bottom:12px">
+   <div class="stat"><b>${f1(p.week_proj)}</b><span>Week ${D.plan_week} ${p.on_bye?'(bye)':'vs '+esc(p.opponent||'')}</span></div>
+   <div class="stat"><b>${f0(p.ros_points)}</b><span>Rest-of-season pts</span></div>
+   <div class="stat"><b>${p.position}${f0(p.own_pos_rank)}</b><span>Our rank</span></div>
+  </div>
+  <p class="sub" style="margin-bottom:4px">Next weeks (green = good matchup, red = tough)</p><div style="margin-bottom:12px">${unitChips(p,10)}</div>
+  <div class="kv">${d?[kv('Points per game',f1(m.dst_ppg)),kv('Sacks per game',f1(m.sacks_pg)),kv('Takeaways per game',f1(m.takeaways_pg)),kv('Interceptions / fumble recoveries',`${f0(m.ints)} / ${f0(m.fum_rec)}`),kv('Defensive & return TDs',f0(m.def_td)),kv('Safeties / blocked kicks',`${f0(m.safeties)} / ${f0(m.blocks)}`),kv('QB hits per game',f1(m.qb_hits_pg)),kv('Points allowed per game',f1(m.pa_pg)),kv('Yards allowed per game',f0(m.ya_pg)),kv('Opposing D/STs score vs this offense',f1(m.off_gives_dst)+' pts/g')].join('')
+     :[kv('Points per game',f1(m.k_ppg)),kv('Field goals',`${f0(m.fg_made)} / ${f0(m.fg_att)}`),kv('FG %',m.fg_pct!=null?Math.round(m.fg_pct*100)+'%':'–'),kv('FG attempts per game',f1(m.fg_att_pg)),kv('40-49 yards made',f0(m.fg_40_49)),kv('50+ yards',`${f0(m.fg_50)} / ${f0(m.fg_att_50)}`),kv('Longest',f0(m.fg_long)),kv('Extra points',`${f0(m.pat_made)} / ${f0(m.pat_att)}`),kv('Kickers score vs his next opponents',f1(m.def_gives_k)+' pts/g (own defense)')].join('')}</div>
+  <p class="sub" style="margin-top:10px">${d?'Projected from his defense\'s scoring so far, what opposing defenses score against each opponent, and, when a line is posted, the opponent\'s Vegas total.':'Projected from his team\'s kicking so far, what kickers score against each opponent, and his own team\'s Vegas total when a line is posted.'} Team stats through week ${D.data_through_week}.</p>`;
+  $('#dlg').showModal();
+}
 const RK=[{k:'name',h:'Player',l:1,f:nm},{k:'proj_ppg',h:'Proj',f:x=>f1(x.proj_ppg),t:'Our projected points per game'},
  {k:'week_proj',h:'Next wk',f:x=>wk(x)},{k:'ros_points',h:'ROS',f:x=>f0(x.ros_points),t:'Rest-of-season points (injuries & byes included)'}];
 
@@ -212,10 +243,12 @@ const views={
   return `${L.mock?'<div class="banner">Demo mode: the league below is made up. Real players and stats, fake rosters.</div>':''}
   ${L.note?`<div class="banner">${esc(L.note)}</div>`:''}
   <div class="card teamhead"><div class="row" style="margin:0">
-    <select id="tvSel" aria-label="Team">${list.map(t=>`<option value="${t.team_id}">${esc(t.name)}${t.team_id===L.team.team_id?'  (you)':'  · #'+t.power_rank}</option>`).join('')}</select>
+    <select id="tvSel" aria-label="Team">${list.map(t=>`<option value="${t.team_id}">${esc(t.name)}${'  · #'+t.power_rank}</option>`).join('')}</select>
     <span class="mute" style="font-size:13px">Pick any team in the league.</span></div></div>
   <div id="tvBody"></div>
-  <div class="card"><h2>League power rankings</h2><p class="sub">By projected rest-of-season starting lineup. Tap a team to open it.</p>${table(L.team.strength,[{k:'name',h:'Team',l:1,f:x=>`<a style="cursor:pointer;color:var(--ink)" onclick="TV.id=${x.team_id};tvRender();window.scrollTo({top:0,behavior:'smooth'})">${x.team_id===L.team.team_id?'<b>'+esc(x.name)+'</b>':esc(x.name)}</a>`},{k:'record',h:'Rec'},{k:'lineup_ppw',h:'Lineup/wk',f:x=>f1(x.lineup_ppw)},{k:'QB_ppw',h:'QB',f:x=>f1(x.QB_ppw)},{k:'RB_ppw',h:'RB',f:x=>f1(x.RB_ppw)},{k:'WR_ppw',h:'WR',f:x=>f1(x.WR_ppw)},{k:'TE_ppw',h:'TE',f:x=>f1(x.TE_ppw)}],{sort:'lineup_ppw'})}</div>`;
+  <div class="card"><h2>Standings &amp; playoff odds</h2><p class="sub">${PO?`From ${PO.sims.toLocaleString()} simulations of the ${PO.weeks_left} regular-season week${PO.weeks_left===1?'':'s'} left: top ${PO.playoff_teams} make the playoffs${PO.byes?`, top ${PO.byes} get a bye`:''}; ties on record broken by ${/H2H/i.test(PO.seeding_rule)?'head-to-head (approximated by points)':'total points'}${PO.divisions?', division winners guaranteed a spot':''}. Every remaining matchup is played out with each team's best lineup that week (D/ST and kicker included), byes, injuries and each defense's opponent. Tap a team to open it.`:'Tap a team to open it.'}</p>${table(L.team.strength.map(t=>{const o=POT[t.team_id]||{},r=STD[String(t.team_id)]||{};return Object.assign({},t,{playoff:o.playoff_pct,bye:o.bye_pct,first:o.first_pct,pwins:o.proj_wins,pf:r.pf!=null?r.pf:t.points_for,seed:o.avg_seed,fullppw:o.ppw,sos:o.sos,dst:unitPpw(t.team_id,'D/ST'),k:unitPpw(t.team_id,'K'),rec:recStr(t.team_id),w:(r.w||0)+0.5*(r.t||0)})}),[{k:'name',h:'Team',l:1,f:x=>`<a style="cursor:pointer;color:var(--ink)" onclick="TV.id=${x.team_id};tvRender();window.scrollTo({top:0,behavior:'smooth'})">${x.team_id===L.team.team_id?'<b>'+esc(x.name)+'</b>':esc(x.name)}</a>${POT[x.team_id]&&POT[x.team_id].clinched?' <span class="tag U">clinched</span>':POT[x.team_id]&&POT[x.team_id].eliminated?' <span class="tag O">out</span>':''}`},{k:'w',h:'Rec',f:x=>x.rec},{k:'pf',h:'PF',f:x=>f0(x.pf),t:'Points scored so far (the tiebreaker)'},
+   ...(PO?[{k:'playoff',h:'Playoffs',f:x=>oddsCell(x.playoff),t:'Chance to make the playoffs'},...(PO.byes?[{k:'bye',h:'Bye',f:x=>pctS(x.bye),t:'Chance of a first-round bye'}]:[]),{k:'first',h:'#1 seed',f:x=>pctS(x.first)},{k:'pwins',h:'Proj. W',f:x=>f1(x.pwins),t:'Average final win total'},{k:'seed',h:'Avg seed',f:x=>f1(x.seed)},{k:'fullppw',h:'Pts/wk',f:x=>f1(x.fullppw),t:'Projected points per week for the rest of the regular season, full lineup incl. D/ST and K'},{k:'sos',h:'Opp pts/wk',f:x=>f1(x.sos),t:'Average projected score of remaining opponents (schedule strength)'}]:[]),
+   {k:'QB_ppw',h:'QB',f:x=>f1(x.QB_ppw)},{k:'RB_ppw',h:'RB',f:x=>f1(x.RB_ppw)},{k:'WR_ppw',h:'WR',f:x=>f1(x.WR_ppw)},{k:'TE_ppw',h:'TE',f:x=>f1(x.TE_ppw)},{k:'dst',h:'D/ST',f:x=>f1(x.dst)},{k:'k',h:'K',f:x=>f1(x.k)}],{sort:PO?'playoff':'lineup_ppw'})}</div>`;
  },
  waivers(){
   if(!L)return noLeague();
@@ -260,6 +293,23 @@ const views={
   <div class="card"><h2>Overvalued</h2><p class="sub">We project at least 1.5 fewer points per game than consensus.</p>${table(o,cols,{})}</div>
   <div class="card"><h2>Star guardrail</h2><p class="sub">Proven stars off to slow starts with normal health and role. Our model dipped a bit, but we don't call them overvalued; history says they bounce back.</p>${table(g,cols,{})}</div>`;
  },
+ units(){
+  const U=P.filter(p=>UNIT_POS.includes(p.position)).map(p=>Object.assign({},p,p.metrics||{},{next3:(p.wk_pts||[]).slice(0,3).reduce((a,b)=>a+b,0)}));
+  const own=x=>x.owner_name?esc(x.owner_name):'<span class="good">FA</span>';
+  const name=x=>`<b>${esc(x.name)}</b> ${x.position==='K'?`<span class="mute">${esc(x.team||'')}</span>`:''}`;
+  const dst=U.filter(x=>x.position==='D/ST'), ks=U.filter(x=>x.position==='K'&&(x.ros_points||0)>0);
+  const fa=(arr,key)=>arr.filter(x=>!x.owner_name).sort((a,b)=>b[key]-a[key]).slice(0,4);
+  const stream=(arr,lbl)=>`<div><p class="sub" style="margin-bottom:4px"><b>${lbl}: this week</b></p>${fa(arr,'week_proj').map(x=>`<div class="p mv" onclick="detail('${x.player_id}')">${name(x)} <span class="mute">${x.on_bye?'bye':'vs '+esc(x.opponent||'')} · ${f1(x.week_proj)} proj</span></div>`).join('')||'<p class="mute">None available.</p>'}
+     <p class="sub" style="margin:10px 0 4px"><b>${lbl}: next three weeks</b></p>${fa(arr,'next3').map(x=>`<div class="p mv" onclick="detail('${x.player_id}')">${name(x)} <span class="mute">${f1(x.next3)} pts · ${unitChips(x,3)}</span></div>`).join('')}</div>`;
+  const offs=(D.unit_metrics||[]).slice().sort((a,b)=>b.off_gives_dst-a.off_gives_dst);
+  return `${L?`<div class="card"><h2>Streaming picks</h2><p class="sub">Best free agents by this week's matchup, and by the next three weeks for a pickup you keep.</p><div class="split">${stream(dst,'D/ST')}${stream(ks,'Kicker')}</div></div>`:''}
+  <div class="card"><h2>Defenses (D/ST)</h2><p class="sub">Ranked by projected points for the rest of the season. Each week is projected against that week's opponent: how many points defenses score against that offense, his defense's own scoring, and the opponent's Vegas total when a line is posted (the strongest single signal, tested on 2023-25). Chips show the next five weeks: green is a good matchup, red a tough one.</p>
+   ${table(dst,[{k:'name',h:'Defense',l:1,f:name},{k:'ros_points',h:'ROS',f:x=>f0(x.ros_points)},{k:'week_proj',h:'Wk '+D.plan_week,f:x=>x.on_bye?'<span class="mute">bye</span>':f1(x.week_proj)},{k:'next3',h:'Next 5 weeks',l:1,f:x=>unitChips(x)},{k:'dst_ppg',h:'Pts/g',f:x=>f1(x.dst_ppg)},{k:'sacks_pg',h:'Sack/g',f:x=>f1(x.sacks_pg)},{k:'takeaways_pg',h:'TO/g',f:x=>f1(x.takeaways_pg),t:'Interceptions + fumble recoveries per game'},{k:'def_td',h:'TD',f:x=>f0(x.def_td)},{k:'pa_pg',h:'PA/g',f:x=>f1(x.pa_pg),t:'Points allowed per game'},{k:'ya_pg',h:'YA/g',f:x=>f0(x.ya_pg),t:'Yards allowed per game'},{k:'owner_name',h:'Team',l:1,f:own}],{sort:'ros_points'})}</div>
+  <div class="card"><h2>Kickers</h2><p class="sub">Each team's current kicker, ranked by projected points for the rest of the season: his team's kicking so far, what kickers score against each opponent, and his own team's Vegas total when a line is posted. Kicking is close to random week to week, so small gaps don't mean much.</p>
+   ${table(ks,[{k:'name',h:'Kicker',l:1,f:name},{k:'ros_points',h:'ROS',f:x=>f0(x.ros_points)},{k:'week_proj',h:'Wk '+D.plan_week,f:x=>x.on_bye?'<span class="mute">bye</span>':f1(x.week_proj)},{k:'next3',h:'Next 5 weeks',l:1,f:x=>unitChips(x)},{k:'k_ppg',h:'Pts/g',f:x=>f1(x.k_ppg)},{k:'fg_pct',h:'FG',f:x=>`${f0(x.fg_made)}/${f0(x.fg_att)}`},{k:'fg_att_pg',h:'Att/g',f:x=>f1(x.fg_att_pg)},{k:'fg_50',h:'50+',f:x=>`${f0(x.fg_50)}/${f0(x.fg_att_50)}`},{k:'fg_long',h:'Long',f:x=>f0(x.fg_long)},{k:'pat_made',h:'XP',f:x=>`${f0(x.pat_made)}/${f0(x.pat_att)}`},{k:'owner_name',h:'Team',l:1,f:own}],{sort:'ros_points'})}</div>
+  <div class="card"><h2>Offenses that feed defenses</h2><p class="sub">Points opposing D/STs have scored per game against each offense this season (shrunk toward average early on). Start defenses against the top of this list.</p>
+   ${table(offs,[{k:'team',h:'Offense',l:1,f:x=>esc(x.team)},{k:'off_gives_dst',h:'D/ST pts allowed/g',f:x=>f1(x.off_gives_dst)},{k:'def_gives_k',h:'K pts allowed/g (their D)',f:x=>f1(x.def_gives_k)}],{sort:'off_gives_dst'})}</div>`;
+ },
  rankings(){
   const id='rk';setTimeout(()=>drawRank(),0);
   return `<div class="card"><div class="row chips" id="pf">${['ALL','QB','RB','WR','TE'].map((x,i)=>`<button class="${i?'':'on'}" data-p="${x}">${x}</button>`).join('')}</div>
@@ -297,7 +347,7 @@ const views={
  method(){
   return `<div class="card method"><h2>How the ratings work</h2>
   <h3>1. History (the prior)</h3><p>Each player's last three seasons, weighted 50/33/17 toward the most recent, counting only games where he played at least 20% of snaps. Rookies start from how past rookies at the same position and draft round scored. Age curves trim older RBs and WRs slightly.</p>
-  <h3>2. This season</h3><p>Actual points blended 50/50 with <b>expected points (xFP)</b>: every target and carry is valued by how many fantasy points the league average gets from that exact opportunity (depth of target, field position, red zone). Workload is far more stable than touchdowns, so xFP tells us whether a hot or cold start is real. Recent games count more: each week back is worth 80% of the one after it, so a player trending up or down moves quickly rather than being averaged flat. Games a player sat while healthy count as zeros.</p>
+  <h3>2. This season</h3><p>Actual points blended 50/50 with <b>expected points (xFP)</b>: every target and carry is valued by how many fantasy points the league average gets from that exact opportunity (depth of target, field position, red zone). Workload is far more stable than touchdowns, so xFP tells us whether a hot or cold start is real. Recent games count more: each week back is worth 80% of the one after it, so a player trending up or down moves quickly rather than being averaged flat. Games a player sat while healthy count as zeros, but only for backups: a player with a real role whenever he plays (35%+ of snaps), or a veteran with a starter's track record who hasn't played yet, is treated as having missed those games hurt, since players on injured reserve drop off the weekly injury report.</p>
   <p>This season's share of a projection grows automatically every week: it is the number of games played against the weight on history and draft day. For a typical player that is roughly 20-30% after two games, about half by week 6, and most of the projection by week 10.</p>
   <h3>3. Draft day</h3><p>Where a player went in your league's draft is what the market thought of him in August, and that view carries information the box scores cannot show yet. His pick is mapped onto our own points curve at his position, so "the fifth tight end off the board" becomes the points per game of our fifth-best tight end. It counts as about 4 games of evidence in week 1 and fades to nothing by week 8, so it steadies early-season projections without overriding what actually happens on the field. Undrafted players and later pickups fall back to ESPN's preseason ranking.</p>
   <h3>4. Blending (why one bad week doesn't sink a star)</h3><p>History counts as a number of "phantom games" (roughly 2 to 6 depending on position and how much track record there is; one full recent season counts as a complete record). After two weeks, this season is only about 25-35% of a proven player's projection; by mid-season it's the majority. If he has <b>lost</b> snaps (down 15+ points), history is trusted half as much, because a real role change should move fast. If he has <b>gained</b> snaps, history keeps its weight and the prior is nudged up instead, since his old numbers came from a smaller job and understate him. Tested on the 2025 season, this blend predicted rest-of-season scoring better than history alone, this season alone, or usage alone, at weeks 2, 4 and 8.</p>
@@ -305,7 +355,7 @@ const views={
   <h3>6. Injuries</h3><p><b>Nobody is marked injured on commentary alone.</b> A status must come from ESPN's injury designation, Sleeper, the official report, your league or a roster move, or from in-game evidence; a write-up with no designation only counts if it says outright that he will miss time. ESPN listing a player as "Active" clears older statuses. <b>How signals are weighed:</b> (1) this week's final injury report (Friday's game designations) is the final word, and not being on it means he is fine. Practice participation earlier in the week is not: "limited on Thursday" means nothing has been decided, so a fresher designation from a beat reporter or ESPN wins until the final report is in, and a reporter's "ruled out for Week 5" or "questionable for Week 5" counts as a call on that game; (2) multi-week news (IR, "out 4-6 weeks", season-ending) holds until something newer says he is cleared or activated; (3) an explicit timeline or ESPN return date is definitive, and so is the injury itself: feeds often say only "Knee - ACL: Surgery", so known injuries carry their typical recovery (ACL, Achilles and torn tendons end the season; Lisfranc about 10 games; leg or ankle fractures about 8; collarbone 7; tightrope surgery 6; meniscus 5; MCL 3). As a cross-check, a hurt starter whom the experts still rank long-term (dynasty) but have dropped from rest-of-season rankings is treated as out for the season; (4) otherwise the newest information wins. A live feed still showing "Out" early in the week usually describes the game just played, so before the new report it counts as "status TBD" (about 45% to play) rather than a certain absence, and newer mild news ("minor sprain", "hoping to play", "expected to play") caps the risk. A starter who vanishes early from a game with no injury logged is caught from snap counts and play-by-play. </p><p>Nine sources, fastest first: play-by-play (who got hurt and whether he came back, within hours of the game), snap counts, Rotoworld/NBC player news (blurbs written from beat reporters, coaches' press conferences and practice reports, usually within minutes, each citing the reporter), ESPN's injury desk (status, return date, news comment), Sleeper, ESPN news headlines, your league's ESPN designations, the official injury and practice reports, and NFL roster moves. News text is read for timelines ("2-4 weeks", "season-ending", "week-to-week", "high-ankle sprain", "surgery") and negations ("avoided a torn ACL"). The most serious current signal sets the status; a newer "full practice" or "cleared" overrides older short-term worries. Games a player left injured are left out of his scoring average.</p>
   <h3>7. Rest of season</h3><p>Projected points per game × games left, minus byes and expected missed games from injuries (IR ≈ 4 games, Out 1, Doubtful 0.8, Questionable 0.25, left game injured 1 with a 50% chance to miss next week, or the injury desk's return date and timeline when there is one). </p>
   <h3>7b. Next week's game: Vegas</h3><p>Next week's projection is scaled by the team's <b>implied total</b> from the betting line (over/under ÷ 2 minus its spread ÷ 2) against that team's usual implied total this season: (this week ÷ usual)<sup>e</sup>, with e = 0.5 for QBs, 0.4 for RBs and WRs and 0.6 for TEs, capped at ±20%. Measured on 2022-25 (fit on 2022-24, checked on 2025), this cut weekly projection errors at every position, and once it was in, the old "points allowed by this defense" factor added nothing, so that factor is now only a fallback for games with no line yet. Lines also already price in part of a backup quarterback, so when one is posted the separate QB adjustment is trimmed by the share Vegas already captures (about 25% for WRs, 50% for TEs, 60% for RBs). Lines come from ESPN's scoreboard (DraftKings) with nflverse as backup; the lineup shows each team's total next to the opponent, green when it is well above the team's usual and red when well below.</p>
-  <h3>8. Market vs. us</h3><p>The consensus rating is a weighted average of FantasyPros rest-of-season consensus (60%, itself 100+ experts), ESPN's projections (25%) and FantasyPros weekly consensus (15%). Each consensus rank is turned into points using our own projection curve, so the gap is in real points. "Undervalued/Overvalued" needs a gap of at least 1.5 points per game and a meaningful rank difference. <b>Star guardrail:</b> a proven star can't be called overvalued unless something structural changed (injury, lost snaps, new team).</p>
+  <h3>8. Market vs. us</h3><p>The consensus rating is a weighted average of FantasyPros rest-of-season consensus (60%, itself 100+ experts), ESPN's projections (25%) and FantasyPros weekly consensus (15%). ESPN's part is its current points per game (its projection for the coming week, or the latest one if he's on bye) times the games he has left; ESPN's full-season projection is not used because it barely moves during the year, so for a player beating his preseason outlook it leaves almost nothing "remaining". The weekly ranking is skipped for anyone on bye or likely out that week, since it ranks them near the bottom for reasons that have nothing to do with the rest of the season. Each consensus rank is turned into points using our own projection curve, so the gap is in real points. "Undervalued/Overvalued" needs a gap of at least 1.5 points per game and a meaningful rank difference. <b>Star guardrail:</b> a proven star can't be called overvalued unless something structural changed (injury, lost snaps, new team).</p>
   <h3>9. Who is throwing the ball</h3><p>Each team's reference quarterback is the intended starter: whoever opened the season, unless he has since been healthy and benched. Every quarterback is graded on passing points per start only (his own rushing does nothing for his receivers), blending his history with this season. When the intended starter is out, his receivers move by (backup ÷ starter)<sup>0.55</sup>. That exponent was measured from every backup start in 2023-25: top receivers keep about 84% of their output with a backup at 70% of the starter's passing quality, and about 74% with a much worse one. The adjustment is capped between −40% and +12%, and it is always relative to the starter, so it is exactly zero when he plays. Next week uses the chance the starter misses that game; rest of season uses the share of remaining games he is expected to miss. Tight ends take 90% of the adjustment and running backs 35%. A backup who inherits the job stops being judged by his old bench role, so his own projection reflects starting.</p>
   <h3>10. Handcuffs</h3><p>Each team's backup running back is tagged as the handcuff to its starter: whoever actually took over when the starter left a game, otherwise the next healthy back on the current depth chart, otherwise the next back by workload. When the starter is likely out <i>this</i> week, the handcuff's weekly projection moves toward that fill-in rate in proportion to the chance the starter sits, and he is flagged "next man up" (tight ends get the flag from the depth chart too, without the projection change, since there is no comparable measurement for them). Measured over 2023-25: RB1s miss about 16% of games, and when they do, the backup scores 70-87% of the starter's output. So a handcuff is worth his fill-in rate times the games his starter is expected to miss (current injuries plus that normal rate). Who owns him matters: if you also own the starter, he fills <i>your</i> hole, so he is measured against your next-best bench option; if you don't, he only counts when his fill-in rate would beat your weakest starter. That insurance is part of every team's value in waivers (a handcuff to your own starter is never suggested as a drop), the trade ideas and the trade analyzer.</p>
   <h3>11. Trade ideas</h3><p>Every 1-for-1, 2-for-1 and 1-for-2 swap with every team is scored by what it does to <b>both</b> teams' best lineups, set separately for every remaining week and added up, plus handcuff insurance. Week by week matters: a player on bye or hurt in a given week scores nothing that week and your best bench option starts instead, so depth that covers byes gets credit and a star on bye this week isn't written off. This uses next week's projections for next week and rest-of-season rates after that, not by player values in isolation, so a player is only worth what he adds to the lineup that team would actually field. An idea is shown only if it improves your team by our numbers and does not weaken their lineup by consensus projections (how they will judge it). Packages with a pointless throw-in are dropped. Ideas that fill a weak spot on both sides rank first, and the trade partners table shows each team's position ranks and whether their bench can fix your needs and vice versa. The trade analyzer runs exactly the same math, so opening an idea there gives identical numbers.</p>
@@ -313,7 +363,9 @@ const views={
   <h3>13. Depth charts</h3><p>Two sources: Ourlads (all 32 teams on one page, maintained by hand and updated after each game and on transactions), and ESPN's depth charts as snapshotted twice a day by nflverse. Ourlads is used when its team page was updated in the last 10 days, ESPN otherwise. A "move" is measured within one source only (Ourlads now vs its own copy from 3-10 days ago; ESPN now vs a week ago), because the two often list backups in a different order, and comparing them would invent promotions; a move is shown only if the current chart agrees. Moves appear on the Injuries tab, in player details, and as a waiver reason, and a promoted backup can clear the waiver floor before his snaps catch up. Depth charts decide who the handcuff is; they don't change projections directly (there is no clean history to measure how much a depth-chart move is worth).</p>
   <h3>14. Advanced stats</h3><p>From PlayerProfiler's free player pages: routes run and route participation (share of team dropbacks he ran a route on), targets and yards per route run, first-read target share, separation, slot rate, and for backs opportunity share and weighted opportunities. They are shown in player details and the Rankings "Advanced" view, and used in waiver and trade explanations ("routes up: 88% of dropbacks the last two games, was 60%"). They do not change projections: they exist only for this season, so there is no history to measure how much weight they deserve, and snaps, targets and expected points already capture most of a role. Pages refresh about weekly (PlayerProfiler updates advanced numbers mid-week), rostered players and top free agents first.</p>
   <h3>15. Where the web data comes from</h3><p>Every page (Ourlads, Rotoworld, PlayerProfiler, ESPN) is first requested directly, which is free. Some sites block cloud servers like GitHub's; for those, the page is fetched through <b>Firecrawl</b> (a real browser service) if a FIRECRAWL_API_KEY secret is set. Firecrawl use is metered: one credit per page, a monthly cap (800 of the free plan's 1,000 by default), at most 40 a run, low-priority pages only while most of the month's budget is left, and PlayerProfiler capped at 200 a month. If both routes fail, the last good copy is used for a few days. The Sources card on the Injuries tab shows how each page arrived and the month's Firecrawl usage.</p>
-  <h3>16. Your league</h3><p>Value over replacement uses your league's real size and lineup slots. Waiver scores measure how much a player improves your best lineup. Trade ideas must improve your lineup by our numbers while being fair or better for the other team by consensus value, so they're offers that can actually get accepted.</p>
+  <h3>16. Defenses and kickers</h3><p>Every team's D/ST and kicker points are computed from nflverse box scores with ESPN's standard scoring (sacks, interceptions, fumble recoveries, defensive and return TDs, safeties, blocked kicks, points and yards allowed; field goals by distance and extra points), then rescaled so the average matches what ESPN actually credits in your league. Each remaining week is projected against that week's opponent, with two models fit on 2023-24 and checked on 2025. With a Vegas line, a defense's projection is driven mostly by the opponent's implied total (about 0.6 points less per point the opponent is expected to score), plus how many points defenses have scored against that offense; this beat the defense's own average (error 4.3 vs 4.7 points). Without a line (weeks further out), it uses the defense's own scoring rate and what that opponent's offense gives up (error 4.4). Kickers use their team's kicking rate, the opposing defense, and their own team's implied total, but kicking is close to random week to week (error 3.8 vs 3.9 for a plain average), so treat kicker rankings loosely. Byes are zero. The current kicker for each team is whoever kicked for them most recently; a rostered kicker who has lost his job projects to zero.</p>
+  <h3>17. Playoff odds</h3><p>The rest of the regular season is played out 20,000 times using your league's real schedule, records, points scored, playoff spots, byes and tiebreaker (and division winners, if your league has divisions). For each remaining week, each team's expected score is its best lineup that week, with every slot your league starts, D/ST and kicker included, using week-by-week projections: byes, injuries, quarterback changes, Vegas totals when posted, and each defense's and kicker's opponent. Each simulated week, every starter's score is drawn around his projection with the week-to-week spread real players show (measured on 2023-25: a 15-point WR typically swings about 8 points, a defense 5.5, a kicker 4.8), so a lineup of boom-or-bust players is riskier than a steady one. On top of that, each team gets one draw per simulated season (about 7%) for what nobody can project yet: future injuries, breakouts and role changes. A week already in progress uses ESPN's live score and live projection. Each team's page shows its odds of making the playoffs, a bye and the #1 seed, its projected record, how hard its remaining schedule is, the chance of winning each remaining game, and how much each game moves its odds. Odds update every run as rosters, injuries and results change.</p>
+  <h3>18. Your league</h3><p>Value over replacement uses your league's real size and lineup slots. Waiver scores measure how much a player improves your best lineup. Trade ideas must improve your lineup by our numbers while being fair or better for the other team by consensus value, so they're offers that can actually get accepted.</p>
   <p class="mute">Replacement level (pts/game): ${Object.entries(D.replacement).map(([k,v])=>k+' '+f1(v)).join(' · ')} · Reception points: ${D.rec_pts}</p></div>`;
  }
 };
@@ -330,7 +382,7 @@ function noLeague(){return `<div class="banner">League not connected: ${esc(D.le
 function drawRank(){
   const box=document.getElementById('rk');if(!box)return;
   const on=document.querySelector('#pf .on').dataset.p, q=$('#q').value.toLowerCase(), g=$('#grp').value, fa=$('#fa').checked;
-  const r=P.filter(p=>(on==='ALL'||p.position===on)&&(!q||(p.name+' '+p.team).toLowerCase().includes(q))&&(!fa||!p.owner_name)).slice(0,300);
+  const r=P.filter(p=>!UNIT_POS.includes(p.position)&&(on==='ALL'||p.position===on)&&(!q||(p.name+' '+p.team).toLowerCase().includes(q))&&(!fa||!p.owner_name)).slice(0,300);
   const G={proj:[{k:'vor_ppg',h:'VOR/g',f:x=>sgn(x.vor_ppg),t:'Points per game above replacement'},{k:'own_pos_rank',h:'Us',f:x=>x.position+f0(x.own_pos_rank)},{k:'consensus_pos_rank',h:'Mkt',f:x=>x.consensus_pos_rank?x.position+f0(x.consensus_pos_rank):'–'},{k:'verdict',h:'',f:x=>verdict(x.verdict)},{k:'prior_ppg',h:'Hist',f:x=>f1(x.prior_ppg)},{k:'cur_ppg',h:'This yr',f:x=>f1(x.cur_ppg)},{k:'owner_name',h:'Rostered',l:1,f:x=>esc(x.owner_name||'')}],
    use:[{k:'snap_pct',h:'Snap%',f:x=>pct(x.snap_pct)},{k:'target_share',h:'Tgt%',f:x=>pct(x.target_share)},{k:'air_yards_share',h:'Air%',f:x=>pct(x.air_yards_share)},{k:'wopr',h:'WOPR',f:x=>f1(x.wopr)},{k:'touches',h:'Touch',f:x=>f0(x.touches)},{k:'targets',h:'Tgt',f:x=>f0(x.targets)},{k:'carries',h:'Car',f:x=>f0(x.carries)},{k:'xfp_total',h:'xFP',f:x=>f1(x.xfp_total)}],
    rz:[{k:'rz_targets',h:'RZ tgt',f:x=>f0(x.rz_targets)},{k:'rz_tgt_share',h:'RZ tgt%',f:x=>pct(x.rz_tgt_share)},{k:'ez_targets',h:'EZ tgt',f:x=>f0(x.ez_targets)},{k:'rz_carries',h:'RZ car',f:x=>f0(x.rz_carries)},{k:'rz_rush_share',h:'RZ car%',f:x=>pct(x.rz_rush_share)},{k:'i10_carries',h:'In-10',f:x=>f0(x.i10_carries)},{k:'tds',h:'TD',f:x=>f0(x.tds)}],
@@ -347,7 +399,7 @@ let TV={id:null};
 const SLOT_ORDER=['QB','RB','WR','TE','FLEX','OP','D/ST','K'];
 const SLOT_FITS={QB:['QB'],RB:['RB'],WR:['WR'],TE:['TE'],FLEX:['RB','WR','TE'],OP:['QB','RB','WR','TE'],'D/ST':['D/ST'],K:['K']};
 const wk2=p=>p.on_bye?'<span class="mute">bye</span>':f1(p.week_proj);
-const others=tid=>((L.rosters||{})[String(tid)]||[]).filter(e=>e.pos==='K'||e.pos==='D/ST'||!byId[e.player_id]);
+const others=tid=>((L.rosters||{})[String(tid)]||[]).filter(e=>!byId[e.player_id]);
 const espnSlot=tid=>{const m={};((L.rosters||{})[String(tid)]||[]).forEach(e=>{if(e.player_id)m[e.player_id]=e.slot});return m};
 
 // Projected starters for the coming week, laid out the way a fantasy lineup reads.
@@ -388,16 +440,42 @@ function lineupHtml(skill, extra, opts={}){
 }
 function wireRows(root){root.querySelectorAll('tr.p[data-id]').forEach(tr=>tr.onclick=()=>detail(tr.dataset.id))}
 
+function pathCard(tid){
+  const o=POT[tid]; if(!o)return '';
+  const n=L.team.strength.length, opp=t=>POT[t]||{};
+  const rows=o.schedule.map(g=>`<tr><td>${g.week}${g.live?' <span class="tag S">live</span>':''}</td><td class="l"><a style="cursor:pointer;color:var(--ink)" onclick="TV.id=${g.opp};tvRender();window.scrollTo({top:0,behavior:'smooth'})"><b>${esc(tName(g.opp))}</b></a> <span class="mute">${recStr(g.opp)} · ${pctS(opp(g.opp).playoff_pct)} playoffs</span></td>
+     <td>${f1(g.my_proj)} – ${f1(g.opp_proj)}</td><td><b class="${g.p_win>=0.6?'good':g.p_win<=0.4?'bad':''}">${pctS(g.p_win)}</b></td><td title="Playoff odds if this game is won minus if it's lost">${o.clinched||o.eliminated?'–':'±'+Math.round(g.swing*50)+'%'}</td></tr>`).join('');
+  const wd=o.wins_dist||[], mx=Math.max(...wd,0.001), cur=Math.round(o.proj_wins);
+  const lo=wd.findIndex(v=>v>0.002), hi=wd.length-1-[...wd].reverse().findIndex(v=>v>0.002);
+  const dist=lo>=0?`<div class="wdist">${wd.slice(lo,hi+1).map((v,i)=>`<div class="${lo+i===cur?'cur':''}" title="${lo+i} wins: ${pctS(v)}" style="height:${Math.max(2,v/mx*100)}%"></div>`).join('')}</div>
+     <div style="display:flex;gap:2px;font-size:10.5px" class="mute">${wd.slice(lo,hi+1).map((v,i)=>`<div style="flex:1;text-align:center">${lo+i}</div>`).join('')}</div><p class="sub" style="margin:2px 0 0">Final win total across simulated seasons</p>`:'';
+  const sosRank=Object.values(POT).filter(x=>x.sos>o.sos).length+1;
+  return `<div class="card"><h2>Path to the playoffs</h2>
+    <div class="grid">
+      <div class="stat ${o.playoff_pct>=0.75?'st-good':o.playoff_pct<=0.2?'st-bad':''}"><span>Make playoffs</span><b>${pctS(o.playoff_pct)}</b><span>${o.clinched?'clinched':o.eliminated?'eliminated':'top '+PO.playoff_teams+' of '+n}</span></div>
+      ${PO.byes?`<div class="stat"><span>First-round bye</span><b>${pctS(o.bye_pct)}</b><span>top ${PO.byes} seeds</span></div>`:''}
+      <div class="stat"><span>#1 seed</span><b>${pctS(o.first_pct)}</b><span>avg seed ${f1(o.avg_seed)}</span></div>
+      <div class="stat"><span>Projected record</span><b>${f1(o.proj_wins)}-${f1(o.proj_losses)}</b><span>now ${recStr(tid)}</span></div>
+      <div class="stat"><span>Schedule left</span><b>${ord(sosRank)} hardest</b><span>opponents avg ${f1(o.sos)} pts/wk</span></div>
+    </div>${dist}
+    ${rows?`<div class="tw" style="margin-top:10px"><table><thead><tr><th>Wk</th><th class="l">Opponent</th><th>Proj. score</th><th>Win</th><th title="How much this game moves the playoff odds">Stakes</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="sub" style="margin-top:6px">Projected scores are each team's best lineup that week (byes, injuries, D/ST and kicker matchups included). "Stakes" is half the gap in playoff odds between winning and losing that game.</p>`:'<p class="mute">Regular season is over.</p>'}</div>`;
+}
+function unitChips(p,k=5){return (p.opps||[]).slice(0,k).map((o,i)=>{const v=(p.wk_pts||[])[i]||0, avg=UAVG[p.position]?UAVG[p.position][i]:0;
+  return o?`<span class="wk ${v>=avg+1.5?'g':v<=avg-1.5?'b':''}" title="Week ${D.plan_week+i} vs ${o}: ${f1(v)} projected">${o} ${f1(v)}</span>`:`<span class="wk x" title="Week ${D.plan_week+i}">BYE</span>`}).join('')}
+const UAVG={};['D/ST','K'].forEach(ps=>{const U=P.filter(p=>p.position===ps&&(p.ros_points||0)>0);UAVG[ps]=Array.from({length:6},(_,i)=>{const v=U.map(p=>(p.wk_pts||[])[i]).filter(x=>x>0);return v.length?v.reduce((a,b)=>a+b,0)/v.length:0})});
 function tvRender(){
   const box=document.getElementById('tvBody'); if(!box)return;
   const sel=document.getElementById('tvSel'); if(sel)sel.value=TV.id;
   const mine=TV.id===L.team.team_id;
   const info=(L.team.strength||[]).find(t=>t.team_id===TV.id)||{};
   const roster=rosterOf(TV.id), extra=others(TV.id), n=L.team.strength.length;
-  const strengths=['QB','RB','WR','TE'].map(ps=>{
-    const v=info[ps+'_ppw']||0, avg=L.team.strength.reduce((t,x)=>t+(x[ps+'_ppw']||0),0)/n;
-    const rank=L.team.strength.filter(x=>(x[ps+'_ppw']||0)>v).length+1;
+  const posVal=(t,ps)=>UNIT_POS.includes(ps)?unitPpw(t.team_id,ps):(t[ps+'_ppw']||0);
+  const strengths=['QB','RB','WR','TE','D/ST','K'].map(ps=>{
+    const v=posVal(info,ps), avg=L.team.strength.reduce((t,x)=>t+posVal(x,ps),0)/n;
+    const rank=L.team.strength.filter(x=>posVal(x,ps)>v+1e-9).length+1;
     return `<div class="stat ${rank<=3?'st-good':rank>n-3?'st-bad':''}"><span>${ps} · ${ord(rank)} of ${n}</span><b>${f1(v)}</b><span>vs avg ${f1(avg)} pts/wk</span></div>`}).join('');
+  const path=pathCard(TV.id);
   const hurt=roster.filter(p=>p.inj_status&&!['CLEARED','RETURNED'].includes(p.inj_status)).sort((a,b)=>(b.exp_missed||0)-(a.exp_missed||0));
   const under=roster.filter(p=>p.verdict==='Undervalued').sort((a,b)=>b.gap_ppg-a.gap_ppg);
   const over=roster.filter(p=>p.verdict==='Overvalued').sort((a,b)=>a.gap_ppg-b.gap_ppg);
@@ -413,12 +491,13 @@ function tvRender(){
   }
   const pl=(ps,cls)=>ps.map(p=>`<div class="p mv" onclick="detail('${p.player_id}')">${nm(p)} <span class="mute">${p.position}${f0(p.own_pos_rank)} us / ${p.position}${f0(p.consensus_pos_rank)} market · <span class="${cls}">${sgn(p.gap_ppg)}/g</span></span></div>`).join('')||'<p class="mute">None.</p>';
   box.innerHTML=`
-  <div class="card"><h2>${esc(info.name||'')}${mine?' <span class="tag S">You</span>':''}</h2>
-    <p class="sub">${esc(info.record||'')} · power rank ${info.power_rank} of ${n} · ${f1(info.lineup_ppw)} projected pts/week rest of season</p>
+  <div class="card"><h2>${esc(info.name||'')}</h2>
+    <p class="sub">${esc(recStr(TV.id))} · power rank ${info.power_rank} of ${n} · ${f1(info.lineup_ppw)} projected pts/week rest of season from QB-RB-WR-TE-FLEX${POT[TV.id]?` · <b>${pctS(POT[TV.id].playoff_pct)}</b> to make the playoffs`:''}</p>
     <div class="grid">${strengths}</div></div>
+  ${path}
   ${moves}
   ${hurt.length?`<div class="card"><h2>Injury watch</h2>${hurt.map(p=>`<div class="p mv" onclick="detail('${p.player_id}')">${nm(p)} <span class="mute">${p.on_bye?'on bye':pct(p.play_prob)+' to play next week'}</span><div class="why">${esc(p.inj_detail||'')} · ${esc(p.inj_source||'')} ${ago(p.inj_updated)}</div></div>`).join('')}</div>`:''}
-  <div class="card"><h2>Projected lineup, week ${D.plan_week}</h2><p class="sub">Best lineup by next week's projections: injuries, byes, matchups and quarterback situation included. Kickers and defenses use ESPN's projection.</p>
+  <div class="card"><h2>Projected lineup, week ${D.plan_week}</h2><p class="sub">Best lineup by next week's projections: injuries, byes, matchups and quarterback situation included. Defenses and kickers are projected against their opponent this week (see the D/ST &amp; K tab).</p>
     <div id="tvLineup">${lineupHtml(roster,extra,{tid:TV.id})}</div></div>
   <div class="card"><div class="split">
     <div><h2 style="margin-bottom:8px">${mine?'Hold':'Buy-low targets'}</h2><p class="sub">${mine?'Your':'Their'} players we rate above the market.</p>${pl(under,'good')}</div>
@@ -567,7 +646,7 @@ function taRender(){  // full redraw: teams changed
   taClean();
   const n=TA.teams.length;
   box.innerHTML=TA.teams.map((tid,i)=>{
-    const opts=allTeams().filter(t=>t.team_id===tid||!TA.teams.includes(t.team_id)).map(t=>`<option value="${t.team_id}" ${t.team_id===tid?'selected':''}>${esc(t.name)}${t.team_id===L.team.team_id?' (you)':''}</option>`).join('');
+    const opts=allTeams().filter(t=>t.team_id===tid||!TA.teams.includes(t.team_id)).map(t=>`<option value="${t.team_id}" ${t.team_id===tid?'selected':''}>${esc(t.name)}</option>`).join('');
     return `<div><div class="tahead"><select class="taTeam" data-i="${i}" aria-label="Team ${i+1}">${opts}</select>${n>2&&i>0?`<button class="x" style="position:static;font-size:18px" title="Remove this team" onclick="taRemoveTeam(${i})">×</button>`:''}</div>
       <p class="sub" style="margin:6px 0 0">${i===0?'Judged from this team\'s side':'Sends'} · tick the players ${esc(teamName(tid))} sends</p>
       <div class="taList">${taRosterHtml(tid)}</div></div>`}).join('');
@@ -603,7 +682,7 @@ function taVerdict(){  // selections changed: leave the lists alone so nothing j
     ${Math.abs(s.hcDelta)>=0.5?'<br>handcuff insurance '+sgn(s.hcDelta):''}${s.depthDelta?'<br>bench depth '+sgn(s.depthDelta):''}</div></div>`;
   const pinfo=p=>`<span class="mute">${f1(ppw(p))}/wk · ${f0(p.ros_points)} ROS · ${p.position}${f0(p.own_pos_rank)} us / ${p.consensus_pos_rank?p.position+f0(p.consensus_pos_rank):'–'} market${(p.exp_missed||0)>=1?' · out ~'+f1(p.exp_missed)+' games':''}</span>`;
   const flows=moved.map(p=>`<div class="flow p" onclick="detail('${p.player_id}')">${nm(p)} <span style="white-space:nowrap">${esc(teamName(p.owner))} → <b>${esc(teamName(TA.moves.get(p.player_id)))}</b></span><br>${pinfo(p)}</div>`).join('');
-  const meLabel=me.name+(me.t===L.team.team_id?' (you)':'');
+  const meLabel=me.name;
   box.innerHTML=`<div class="banner" style="background:${cls==='good'?'var(--good-bg)':cls==='bad'?'var(--bad-bg)':'var(--warn-bg)'};color:${cls==='good'?'var(--good)':cls==='bad'?'var(--bad)':'var(--warn)'}"><b>${title}</b>${me.t!==L.team.team_id?` <span style="font-weight:400">(judged for ${esc(me.name)})</span>`:''}<br>${line}</div>
    ${whyWeek(me.s,me.out,me.inn)}
    ${empty.length?`<p class="sub" style="margin:-4px 0 10px">${esc(empty.join(' and '))} ${empty.length>1?'aren\'t':'isn\'t'} sending or receiving anyone, so ${empty.length>1?'they\'re':'it\'s'} left out.</p>`:''}
@@ -633,7 +712,7 @@ document.addEventListener('change',e=>{
   }
 });
 
-const TABS=[['team','Team'],['waivers','Waivers'],['trades','Trades'],['analyzer','Trade analyzer'],['value','Value board'],['rankings','Rankings'],['injuries','Injuries'],['method','How it works']];
+const TABS=[['team','Team'],['waivers','Waivers'],['trades','Trades'],['analyzer','Trade analyzer'],['value','Value board'],['rankings','Rankings'],['units','D/ST & K'],['injuries','Injuries'],['method','How it works']];
 function go(k){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.k===k));$('#main').innerHTML=views[k]();try{localStorage.setItem('tab',k)}catch(e){}}
 $('#tabs').innerHTML=TABS.map(([k,h])=>`<button data-k="${k}">${h}</button>`).join('');
 document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>go(b.dataset.k));

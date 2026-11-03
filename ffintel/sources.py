@@ -134,3 +134,10 @@ def depth_charts(season: int) -> pd.DataFrame:
     return _fetch(f"depth_{season}",
                   _variants(f"{NFLVERSE}/depth_charts/depth_charts_{season}", (".parquet", ".csv.gz", ".csv")),
                   True, required=False)
+
+
+def team_stats(season: int) -> pd.DataFrame:
+    """Team-level weekly stats (defense, special teams, kicking, offense) from nflverse."""
+    return _fetch(f"team_{season}",
+                  _variants(f"{NFLVERSE}/stats_team/stats_team_week_{season}", (".parquet", ".csv.gz", ".csv")),
+                  season == config.SEASON, required=False)
