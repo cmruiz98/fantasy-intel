@@ -154,7 +154,13 @@ const tName=tid=>((L&&L.team.strength||[]).find(t=>t.team_id===+tid)||{}).name||
 const recStr=tid=>{const r=STD[String(tid)];return r?`${r.w}-${r.l}${r.t?'-'+r.t:''}`:(((L&&L.team.strength||[]).find(t=>t.team_id===+tid)||{}).record||'')};
 const oddsCell=v=>v==null?'–':`<div class="odds"><b class="${v>=0.75?'good':v<=0.2?'bad':''}">${v>=0.995&&v<1?'>99%':v<=0.005&&v>0?'<1%':Math.round(v*100)+'%'}</b><div class="obar" style="width:64px"><div style="width:${Math.round(v*100)}%"></div></div></div>`;
 const pctS=v=>v==null?'–':(v>=0.995&&v<1?'>99%':v<=0.005&&v>0?'<1%':Math.round(v*100)+'%');  // 100%/0% only when certain
-const unitPpw=(tid,pos)=>Math.max(0,...P.filter(p=>p.owner===tid&&p.position===pos).map(p=>(p.ros_points||0)/(D.weeks_left||1)));
+// Strength = projected points per game his team plays (injuries count, bye weeks don't),
+// from the best starting lineup: one QB means one QB, never the whole QB room.
+const rateOf=p=>p.ros_rate!=null?p.ros_rate:(p.ros_points||0)/Math.max(1,p.rem_weeks||p.ros_games||1);
+const unitPpw=(tid,pos)=>Math.max(0,...P.filter(p=>p.owner===tid&&p.position===pos).map(rateOf));
+const POSR={};
+function posRates(tid){if(!POSR[tid])POSR[tid]=posStrength(rosterOf(tid).filter(p=>!UNIT_POS.includes(p.position)),rateOf);return POSR[tid]}
+const lineupRate=tid=>{const r=posRates(tid);return r.QB+r.RB+r.WR+r.TE};
 const UNIT_POS=['D/ST','K'];
 const gen=new Date(D.generated);
 $('#meta').textContent=`${D.season} season · week ${D.week}${D.plan_week!==D.week?` (planning for week ${D.plan_week})`:''} · stats through week ${D.data_through_week} · updated ${gen.toLocaleString()}`;
@@ -232,7 +238,7 @@ function unitDetail(p){
   $('#dlg').showModal();
 }
 const RK=[{k:'name',h:'Player',l:1,f:nm},{k:'proj_ppg',h:'Proj',f:x=>f1(x.proj_ppg),t:'Our projected points per game'},
- {k:'week_proj',h:'Next wk',f:x=>wk(x)},{k:'ros_points',h:'ROS',f:x=>f0(x.ros_points),t:'Rest-of-season points (injuries & byes included)'}];
+ {k:'week_proj',h:'Next wk',f:x=>wk(x)},{k:'ros_rate',h:'ROS/g',f:x=>f1(x.ros_rate),t:'Rest-of-season points per game his team plays: injuries count, byes don\'t (this sets our rank)'},{k:'ros_points',h:'ROS',f:x=>f0(x.ros_points),t:'Rest-of-season points (injuries & byes included)'}];
 
 const views={
  team(){
@@ -246,9 +252,9 @@ const views={
     <select id="tvSel" aria-label="Team">${list.map(t=>`<option value="${t.team_id}">${esc(t.name)}${'  · #'+t.power_rank}</option>`).join('')}</select>
     <span class="mute" style="font-size:13px">Pick any team in the league.</span></div></div>
   <div id="tvBody"></div>
-  <div class="card"><h2>Standings &amp; playoff odds</h2><p class="sub">${PO?`From ${PO.sims.toLocaleString()} simulations of the ${PO.weeks_left} regular-season week${PO.weeks_left===1?'':'s'} left: top ${PO.playoff_teams} make the playoffs${PO.byes?`, top ${PO.byes} get a bye`:''}; ties on record broken by ${/H2H/i.test(PO.seeding_rule)?'head-to-head (approximated by points)':'total points'}${PO.divisions?', division winners guaranteed a spot':''}. Every remaining matchup is played out with each team's best lineup that week (D/ST and kicker included), byes, injuries and each defense's opponent. Tap a team to open it.`:'Tap a team to open it.'}</p>${table(L.team.strength.map(t=>{const o=POT[t.team_id]||{},r=STD[String(t.team_id)]||{};return Object.assign({},t,{playoff:o.playoff_pct,bye:o.bye_pct,first:o.first_pct,pwins:o.proj_wins,pf:r.pf!=null?r.pf:t.points_for,seed:o.avg_seed,fullppw:o.ppw,sos:o.sos,dst:unitPpw(t.team_id,'D/ST'),k:unitPpw(t.team_id,'K'),rec:recStr(t.team_id),w:(r.w||0)+0.5*(r.t||0)})}),[{k:'name',h:'Team',l:1,f:x=>`<a style="cursor:pointer;color:var(--ink)" onclick="TV.id=${x.team_id};tvRender();window.scrollTo({top:0,behavior:'smooth'})">${x.team_id===L.team.team_id?'<b>'+esc(x.name)+'</b>':esc(x.name)}</a>${POT[x.team_id]&&POT[x.team_id].clinched?' <span class="tag U">clinched</span>':POT[x.team_id]&&POT[x.team_id].eliminated?' <span class="tag O">out</span>':''}`},{k:'w',h:'Rec',f:x=>x.rec},{k:'pf',h:'PF',f:x=>f0(x.pf),t:'Points scored so far (the tiebreaker)'},
+  <div class="card"><h2>Standings &amp; playoff odds</h2><p class="sub">${PO?`From ${PO.sims.toLocaleString()} simulations of the ${PO.weeks_left} regular-season week${PO.weeks_left===1?'':'s'} left: top ${PO.playoff_teams} make the playoffs${PO.byes?`, top ${PO.byes} get a bye`:''}; ties on record broken by ${/H2H/i.test(PO.seeding_rule)?'head-to-head (approximated by points)':'total points'}${PO.divisions?', division winners guaranteed a spot':''}. Every remaining matchup is played out with each team's best lineup that week (D/ST and kicker included), byes, injuries and each defense's opponent. Tap a team to open it.`:'Tap a team to open it.'}</p>${table(L.team.strength.map(t=>{const o=POT[t.team_id]||{},r=STD[String(t.team_id)]||{};return Object.assign({},t,{playoff:o.playoff_pct,bye:o.bye_pct,first:o.first_pct,pwins:o.proj_wins,pf:r.pf!=null?r.pf:t.points_for,seed:o.avg_seed,fullppw:o.ppw,sos:o.sos,dst:unitPpw(t.team_id,'D/ST'),k:unitPpw(t.team_id,'K'),qbr:posRates(t.team_id).QB,rbr:posRates(t.team_id).RB,wrr:posRates(t.team_id).WR,ter:posRates(t.team_id).TE,rec:recStr(t.team_id),w:(r.w||0)+0.5*(r.t||0)})}),[{k:'name',h:'Team',l:1,f:x=>`<a style="cursor:pointer;color:var(--ink)" onclick="TV.id=${x.team_id};tvRender();window.scrollTo({top:0,behavior:'smooth'})">${x.team_id===L.team.team_id?'<b>'+esc(x.name)+'</b>':esc(x.name)}</a>${POT[x.team_id]&&POT[x.team_id].clinched?' <span class="tag U">clinched</span>':POT[x.team_id]&&POT[x.team_id].eliminated?' <span class="tag O">out</span>':''}`},{k:'w',h:'Rec',f:x=>x.rec},{k:'pf',h:'PF',f:x=>f0(x.pf),t:'Points scored so far (the tiebreaker)'},
    ...(PO?[{k:'playoff',h:'Playoffs',f:x=>oddsCell(x.playoff),t:'Chance to make the playoffs'},...(PO.byes?[{k:'bye',h:'Bye',f:x=>pctS(x.bye),t:'Chance of a first-round bye'}]:[]),{k:'first',h:'#1 seed',f:x=>pctS(x.first)},{k:'pwins',h:'Proj. W',f:x=>f1(x.pwins),t:'Average final win total'},{k:'seed',h:'Avg seed',f:x=>f1(x.seed)},{k:'fullppw',h:'Pts/wk',f:x=>f1(x.fullppw),t:'Projected points per week for the rest of the regular season, full lineup incl. D/ST and K'},{k:'sos',h:'Opp pts/wk',f:x=>f1(x.sos),t:'Average projected score of remaining opponents (schedule strength)'}]:[]),
-   {k:'QB_ppw',h:'QB',f:x=>f1(x.QB_ppw)},{k:'RB_ppw',h:'RB',f:x=>f1(x.RB_ppw)},{k:'WR_ppw',h:'WR',f:x=>f1(x.WR_ppw)},{k:'TE_ppw',h:'TE',f:x=>f1(x.TE_ppw)},{k:'dst',h:'D/ST',f:x=>f1(x.dst)},{k:'k',h:'K',f:x=>f1(x.k)}],{sort:PO?'playoff':'lineup_ppw'})}</div>`;
+   {k:'qbr',h:'QB',f:x=>f1(x.qbr),t:'Starting QB, projected points per game'},{k:'rbr',h:'RB',f:x=>f1(x.rbr)},{k:'wrr',h:'WR',f:x=>f1(x.wrr)},{k:'ter',h:'TE',f:x=>f1(x.ter)},{k:'dst',h:'D/ST',f:x=>f1(x.dst)},{k:'k',h:'K',f:x=>f1(x.k)}],{sort:PO?'playoff':'lineup_ppw'})}</div>`;
  },
  waivers(){
   if(!L)return noLeague();
@@ -389,7 +395,7 @@ function drawRank(){
    adv:[{k:'route_pct',h:'Route%',f:x=>x.route_pct==null?'–':Math.round(x.route_pct)+'%',t:'Share of team dropbacks he ran a route on (PlayerProfiler)'},{k:'routes_pg',h:'Rt/g',f:x=>f1(x.routes_pg)},{k:'tprr',h:'TPRR',f:x=>x.tprr==null?'–':Math.round(x.tprr)+'%',t:'Targets per route run'},{k:'yprr',h:'YPRR',f:x=>x.yprr==null?'–':(+x.yprr).toFixed(2),t:'Yards per route run'},{k:'fr_share',h:'1st read',f:x=>x.fr_share==null?'–':Math.round(x.fr_share)+'%',t:'First-read target share'},{k:'opp_share',h:'Opp%',f:x=>x.opp_share==null?'–':Math.round(x.opp_share)+'%',t:'RB: share of team RB opportunities'},{k:'depth_label',h:'Depth',l:1,f:x=>esc(x.depth_label||'')+(x.depth_dir?` <span class="${x.depth_dir==='up'?'good':'bad'}">${x.depth_dir==='up'?'↑':'↓'}</span>`:'')}],
    game:[{k:'opponent',h:'Opp',l:1,f:x=>x.on_bye?'BYE':esc(x.opponent||'')},{k:'imp_total',h:'Team total',f:x=>f1(x.imp_total),t:'Vegas implied points'},{k:'imp_avg',h:'Usual',f:x=>f1(x.imp_avg),t:'Team average implied total this season'},{k:'spread',h:'Spread',f:x=>x.spread==null?'–':sgn(x.spread)},{k:'game_factor',h:'Game ×',f:x=>x.game_factor==null||x.on_bye?'–':(+x.game_factor).toFixed(2),t:'Vegas factor (or matchup if no line yet)'},{k:'play_prob',h:'Play%',f:x=>playOdds(x)}],
    prod:[{k:'pts_total',h:'Pts',f:x=>f1(x.pts_total)},{k:'receptions',h:'Rec',f:x=>f0(x.receptions)},{k:'rec_yds',h:'RecYd',f:x=>f0(x.rec_yds)},{k:'rush_yds',h:'RuYd',f:x=>f0(x.rush_yds)},{k:'pass_yds',h:'PaYd',f:x=>f0(x.pass_yds)},{k:'tds',h:'TD',f:x=>f0(x.tds)},{k:'l3_ppg',h:'L3',f:x=>f1(x.l3_ppg)}]};
-  box.innerHTML=table(r,[...RK,...G[g]],{sort:'ros_points'});
+  box.innerHTML=table(r,[...RK,...G[g]],{sort:'ros_rate'});
 }
 document.addEventListener('click',e=>{const b=e.target.closest('#pf button');if(b){document.querySelectorAll('#pf button').forEach(x=>x.classList.remove('on'));b.classList.add('on');drawRank()}});
 document.addEventListener('input',e=>{if(['q','grp','fa'].includes(e.target.id))drawRank()});
@@ -470,11 +476,11 @@ function tvRender(){
   const mine=TV.id===L.team.team_id;
   const info=(L.team.strength||[]).find(t=>t.team_id===TV.id)||{};
   const roster=rosterOf(TV.id), extra=others(TV.id), n=L.team.strength.length;
-  const posVal=(t,ps)=>UNIT_POS.includes(ps)?unitPpw(t.team_id,ps):(t[ps+'_ppw']||0);
+  const posVal=(t,ps)=>UNIT_POS.includes(ps)?unitPpw(t.team_id,ps):(posRates(t.team_id)[ps]||0);
   const strengths=['QB','RB','WR','TE','D/ST','K'].map(ps=>{
     const v=posVal(info,ps), avg=L.team.strength.reduce((t,x)=>t+posVal(x,ps),0)/n;
     const rank=L.team.strength.filter(x=>posVal(x,ps)>v+1e-9).length+1;
-    return `<div class="stat ${rank<=3?'st-good':rank>n-3?'st-bad':''}"><span>${ps} · ${ord(rank)} of ${n}</span><b>${f1(v)}</b><span>vs avg ${f1(avg)} pts/wk</span></div>`}).join('');
+    return `<div class="stat ${rank<=3?'st-good':rank>n-3?'st-bad':''}"><span>${ps} · ${ord(rank)} of ${n}</span><b>${f1(v)}</b><span>vs avg ${f1(avg)} pts/game</span></div>`}).join('');
   const path=pathCard(TV.id);
   const hurt=roster.filter(p=>p.inj_status&&!['CLEARED','RETURNED'].includes(p.inj_status)).sort((a,b)=>(b.exp_missed||0)-(a.exp_missed||0));
   const under=roster.filter(p=>p.verdict==='Undervalued').sort((a,b)=>b.gap_ppg-a.gap_ppg);
@@ -492,7 +498,7 @@ function tvRender(){
   const pl=(ps,cls)=>ps.map(p=>`<div class="p mv" onclick="detail('${p.player_id}')">${nm(p)} <span class="mute">${p.position}${f0(p.own_pos_rank)} us / ${p.position}${f0(p.consensus_pos_rank)} market · <span class="${cls}">${sgn(p.gap_ppg)}/g</span></span></div>`).join('')||'<p class="mute">None.</p>';
   box.innerHTML=`
   <div class="card"><h2>${esc(info.name||'')}</h2>
-    <p class="sub">${esc(recStr(TV.id))} · power rank ${info.power_rank} of ${n} · ${f1(info.lineup_ppw)} projected pts/week rest of season from QB-RB-WR-TE-FLEX${POT[TV.id]?` · <b>${pctS(POT[TV.id].playoff_pct)}</b> to make the playoffs`:''}</p>
+    <p class="sub">${esc(recStr(TV.id))} · power rank ${info.power_rank} of ${n} · ${f1(lineupRate(TV.id))} projected pts/game from QB-RB-WR-TE-FLEX (byes aside)${POT[TV.id]?` · <b>${pctS(POT[TV.id].playoff_pct)}</b> to make the playoffs`:''}</p>
     <div class="grid">${strengths}</div></div>
   ${path}
   ${moves}

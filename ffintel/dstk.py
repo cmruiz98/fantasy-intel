@@ -315,6 +315,8 @@ def build(season: int, plan_week: int, rem: dict, lines: dict, players: pd.DataF
     met = pd.DataFrame(metrics)
     for pos in ("D/ST", "K"):
         msk = units.position == pos
-        units.loc[msk, "own_pos_rank"] = units[msk].ros_points.rank(ascending=False, method="first")
+        rate = units[msk].ros_points / units[msk].rem_weeks.clip(lower=1)
+        units.loc[msk, "ros_rate"] = rate
+        units.loc[msk, "own_pos_rank"] = rate.rank(ascending=False, method="first")
     units["scale"] = np.where(units.position == "D/ST", scale_dst, scale_k)
     return units, met

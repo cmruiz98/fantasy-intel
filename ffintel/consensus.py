@@ -71,18 +71,26 @@ def composite(df: pd.DataFrame, espn_proj: dict | None) -> pd.DataFrame:
     df["consensus_sources"] = [sum(pd.notna(r.get(s + "_r")) for s in WEIGHTS) for _, r in df.iterrows()]
     df["consensus_pos_rank"] = df.groupby("position").consensus_pos_rank_raw.rank(method="first")
 
-    # own positional rank by rest-of-season points (injuries and byes included)
-    df["own_pos_rank"] = df.groupby("position").ros_points.rank(ascending=False, method="first")
+    # Our positional rank: rest-of-season points per game his TEAM plays. Injuries still count
+    # (a game he's expected to miss is a zero), but bye weeks don't: a bye is the same week off
+    # for everyone at some point, and ranking by raw totals put Jordan Love (18 points a game,
+    # bye still ahead) at QB15 behind quarterbacks who score less but already had theirs.
+    # The market's ranks ignore byes too, so this also makes the over/undervalued call fair.
+    team_games = df.rem_weeks.fillna(0).clip(lower=1) if "rem_weeks" in df else df.ros_games.clip(lower=1)
+    df["ros_rate"] = np.where(df.ros_points.notna(), df.ros_points / team_games, np.nan)
+    df["own_pos_rank"] = df.groupby("position").ros_rate.rank(ascending=False, method="first")
 
     # translate the market's rank into points using our own curve at that rank
     implied = np.full(len(df), np.nan)
     for pos, grp in df.groupby("position"):
-        curve = np.sort(grp.ros_points.values)[::-1]
+        curve = np.sort(grp.ros_rate.dropna().values)[::-1]
         idx = grp.index
         r = grp.consensus_pos_rank.values
         ok = ~np.isnan(r)
-        implied[df.index.get_indexer(idx[ok])] = np.interp(r[ok], np.arange(1, len(curve) + 1), curve)
-    df["market_ros_points"] = implied
+        if len(curve):
+            implied[df.index.get_indexer(idx[ok])] = np.interp(r[ok], np.arange(1, len(curve) + 1), curve)
+    df["market_rate"] = implied
+    df["market_ros_points"] = df.market_rate * team_games  # over the same games he has left
     df["value_gap"] = df.ros_points - df.market_ros_points
     games = df.ros_games.clip(lower=1)
     df["gap_ppg"] = df.value_gap / games
