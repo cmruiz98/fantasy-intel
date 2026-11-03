@@ -137,6 +137,40 @@ def simulate(league, rows_by_team: dict, plan_week: int, sims: int = SIMS, seed:
         made[s, order[:n_play]] = True
         bye[s, order[:n_bye]] = True
 
+    # Mathematical clinch / elimination (a guarantee, not "happened in every simulation"):
+    # clinched if, even losing every remaining game, fewer than the playoff spots' worth of
+    # teams could finish level with or ahead of him; eliminated if enough teams are already
+    # guaranteed to finish ahead even if he wins out. Ties count against him (tiebreakers
+    # aren't settled yet), and with divisions any other division's winner counts as a threat.
+    left = np.zeros(T)
+    for m, h, a, *_ in game_info:
+        left[h] += 1
+        left[a] += 1
+    min_w, max_w = wins0, wins0 + left
+    math_clinch, math_elim = np.zeros(T, bool), np.zeros(T, bool)
+    for i in range(T):
+        threats = sum(1 for j in range(T) if j != i and max_w[j] >= min_w[i])
+        if divs:
+            other_divs = {divs.get(teams[j]) for j in range(T) if divs.get(teams[j]) != divs.get(teams[i])}
+            threats = max(threats, sum(1 for j in range(T) if j != i and max_w[j] >= min_w[i]) + len(other_divs))
+        math_clinch[i] = threats < n_play
+        ahead = sum(1 for j in range(T) if j != i and min_w[j] > max_w[i])
+        elim = ahead >= n_play
+        if divs and elim:  # can he still win his own division?
+            mates = [j for j in range(T) if j != i and divs.get(teams[j]) == divs.get(teams[i])]
+            if not any(min_w[j] > max_w[i] for j in mates):
+                elim = False
+        math_elim[i] = elim
+
+    def odds(v, sure_yes, sure_no):
+        """Never show 100% or 0% unless it's mathematically certain."""
+        v = float(v)
+        if not sure_yes:
+            v = min(v, 0.999)
+        if not sure_no:
+            v = max(v, 0.001)
+        return round(v, 4)
+
     out = {"sims": sims, "playoff_teams": n_play, "byes": n_bye, "reg_weeks": league.reg_weeks,
            "seeding_rule": league.seeding_rule, "divisions": bool(divs), "weeks_left": len(weeks), "teams": {}}
     for t in teams:
@@ -156,9 +190,9 @@ def simulate(league, rows_by_team: dict, plan_week: int, sims: int = SIMS, seed:
                           "swing": round(lev, 3), "live": bool(m.get("live")) and m["week"] < plan_week})
         w_final = wins[:, i]
         out["teams"][t] = {
-            "playoff_pct": round(float(made[:, i].mean()), 4),
-            "bye_pct": round(float(bye[:, i].mean()), 4) if n_bye else None,
-            "first_pct": round(float((seedpos[:, i] == 1).mean()), 4),
+            "playoff_pct": odds(made[:, i].mean(), math_clinch[i], math_elim[i]),
+            "bye_pct": odds(bye[:, i].mean(), False, math_elim[i]) if n_bye else None,
+            "first_pct": odds((seedpos[:, i] == 1).mean(), False, math_elim[i]),
             "last_pct": round(float((seedpos[:, i] == T).mean()), 4),
             "avg_seed": round(float(seedpos[:, i].mean()), 2),
             "proj_wins": round(float(w_final.mean()), 2),
@@ -168,7 +202,7 @@ def simulate(league, rows_by_team: dict, plan_week: int, sims: int = SIMS, seed:
             "ppw": round(float(np.mean([proj[(t, w)][0] for w in weeks if (t, w) in proj])) if weeks else 0.0, 1),
             "sos": round(float(np.mean([g["opp_proj"] for g in sched])) if sched else 0.0, 1),
             "schedule": sched,
-            "clinched": bool(made[:, i].all()), "eliminated": bool(not made[:, i].any()),
+            "clinched": bool(math_clinch[i]), "eliminated": bool(math_elim[i]),
         }
     out["lineups"] = {f"{t}|{w}": st for (t, w), st in lineups.items() if w == plan_week}
     return out

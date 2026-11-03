@@ -180,6 +180,16 @@ def _neg(text, start):
     return bool(NEGATION.search(seg))
 
 
+GUESS_LABELS = {"fracture", "surgery", "injured reserve", "high-ankle sprain", "awaiting MRI", "week-to-week",
+                "day-to-day", "practice absence", "doubtful", "concussion protocol", "ruled out"}
+
+
+def explicit_timeline(label: str) -> bool:
+    """True when the text gave a real timeline ("out 4-6 weeks", "season-ending") or named an
+    injury with a well-known long recovery (ACL, Achilles, Lisfranc...); False for generic guesses."""
+    return label not in GUESS_LABELS
+
+
 def text_severity(text: str) -> tuple[float, str] | None:
     """Best guess of games missed from injury news text; None if nothing found."""
     if not text:
@@ -539,11 +549,20 @@ def espn_feed(espn_idmap: dict, nidx: dict, game_dates: dict) -> list[Signal]:
             label = status or ("SEASON" if games >= 99 else "OUT" if games >= 1 else
                                "QUESTIONABLE" if games >= 0.3 else "NEWS")
             timeline = bool(sev and sev[0] >= 1 and absence)
+            # A game-day designation (Questionable/Doubtful) means the team expects he may play
+            # this week. A text-only GUESS ("broken rib" -> a generic fracture, "surgery") must not
+            # override it; only an explicit timeline or a known long injury (ACL, Achilles...) can.
+            guess = bool(sev) and not explicit_timeline(sev[1])
+            if status in ("QUESTIONABLE", "DOUBTFUL") and guess:
+                games, timeline, absence = BASE_GAMES[status], False, False
             if details.get("returnDate") and status:
                 g = _games_from_return(details["returnDate"], tabbr, game_dates)
                 if g is not None and status in ("OUT", "IR", "PUP", "SUSPENSION", "SEASON") and g >= 1:
-                    games = max(g, games)  # never let a return date shrink a stated timeline
+                    # a return date can't shrink a stated timeline, but it does replace a guess
+                    games = g if guess and sev and sev[0] == games else max(g, games)
                     timeline = True
+                elif g is not None and g < 1 and status in ("QUESTIONABLE", "DOUBTFUL") and guess:
+                    games, timeline = BASE_GAMES[status], False  # ESPN expects him back for the next game
             positive = bool(POSITIVE.search(mine or comment)) or (pos_active and not absence)
             mild = bool(MILD.search(mine)) and not positive
             if positive and not status:

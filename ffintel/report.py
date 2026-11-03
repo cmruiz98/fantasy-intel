@@ -153,7 +153,7 @@ const PO=(L&&L.playoffs)||null, POT=PO?PO.teams:{}, STD=(L&&L.standings)||{};
 const tName=tid=>((L&&L.team.strength||[]).find(t=>t.team_id===+tid)||{}).name||('Team '+tid);
 const recStr=tid=>{const r=STD[String(tid)];return r?`${r.w}-${r.l}${r.t?'-'+r.t:''}`:(((L&&L.team.strength||[]).find(t=>t.team_id===+tid)||{}).record||'')};
 const oddsCell=v=>v==null?'–':`<div class="odds"><b class="${v>=0.75?'good':v<=0.2?'bad':''}">${v>=0.995&&v<1?'>99%':v<=0.005&&v>0?'<1%':Math.round(v*100)+'%'}</b><div class="obar" style="width:64px"><div style="width:${Math.round(v*100)}%"></div></div></div>`;
-const pctS=v=>v==null?'–':(v>=0.995&&v<1?'>99%':v<=0.005&&v>0?'<1%':Math.round(v*100)+'%');
+const pctS=v=>v==null?'–':(v>=0.995&&v<1?'>99%':v<=0.005&&v>0?'<1%':Math.round(v*100)+'%');  // 100%/0% only when certain
 const unitPpw=(tid,pos)=>Math.max(0,...P.filter(p=>p.owner===tid&&p.position===pos).map(p=>(p.ros_points||0)/(D.weeks_left||1)));
 const UNIT_POS=['D/ST','K'];
 const gen=new Date(D.generated);
@@ -452,7 +452,7 @@ function pathCard(tid){
   const sosRank=Object.values(POT).filter(x=>x.sos>o.sos).length+1;
   return `<div class="card"><h2>Path to the playoffs</h2>
     <div class="grid">
-      <div class="stat ${o.playoff_pct>=0.75?'st-good':o.playoff_pct<=0.2?'st-bad':''}"><span>Make playoffs</span><b>${pctS(o.playoff_pct)}</b><span>${o.clinched?'clinched':o.eliminated?'eliminated':'top '+PO.playoff_teams+' of '+n}</span></div>
+      <div class="stat ${o.playoff_pct>=0.75?'st-good':o.playoff_pct<=0.2?'st-bad':''}"><span>Make playoffs</span><b>${pctS(o.playoff_pct)}</b><span>${o.clinched?'clinched (guaranteed)':o.eliminated?'eliminated':'top '+PO.playoff_teams+' of '+n}</span></div>
       ${PO.byes?`<div class="stat"><span>First-round bye</span><b>${pctS(o.bye_pct)}</b><span>top ${PO.byes} seeds</span></div>`:''}
       <div class="stat"><span>#1 seed</span><b>${pctS(o.first_pct)}</b><span>avg seed ${f1(o.avg_seed)}</span></div>
       <div class="stat"><span>Projected record</span><b>${f1(o.proj_wins)}-${f1(o.proj_losses)}</b><span>now ${recStr(tid)}</span></div>
