@@ -101,10 +101,11 @@ come out on Sunday).
 
 | Tab | What it's for |
 |---|---|
-| **Team** | Any team in the league (yours first): position strengths, projected lineup in fantasy order (QB, RB, RB, WR, WR, TE, FLEX, D/ST, K, then bench), injury watch, buy-low/sell-high, and for your team the lineup changes vs your ESPN lineup |
+| **Team** | Any team in the league (yours first): playoff odds and its path to the playoffs (chance to make it, get a bye or the #1 seed, projected record, win chance and stakes of every remaining game), position strengths incl. D/ST and K, projected lineup in fantasy order (QB, RB, RB, WR, WR, TE, FLEX, D/ST, K, then bench), injury watch, buy-low/sell-high, and for your team the lineup changes vs your ESPN lineup |
 | **Waivers** | Best pickups for *your* roster, how much each improves your lineup, who to drop, why (rising snaps, target share, red-zone work, ESPN add trend) |
 | **Trades** | Your needs and surplus, every team's position ranks and fit with you, and trade ideas that fix a need on both sides (lineup plus handcuff value, judged by our numbers for you and consensus for them), plus buy-low and sell-high lists |
 | **Trade analyzer** | Build any trade yourself: pick two teams and any players on each side, and see what each team gains or loses in rest-of-season starting-lineup points (by our numbers and by consensus), plus both teams' projected lineups after the trade |
+| **D/ST & K** | Every defense and kicker ranked for the rest of the season with week-by-week matchup projections, season metrics (sacks, takeaways, TDs, points and yards allowed; FG by distance, accuracy, extra points), streaming picks, and which offenses feed defenses |
 | **Value board** | Every over/undervalued player league-wide, plus stars on the guardrail list |
 | **Rankings** | All players, filter by position, switch column sets (projection, usage, red zone, production, advanced routes, this week's game and Vegas total), free agents only; tap anyone for a full breakdown |
 | **Injuries** | Everyone relevant with a status, how likely they play, and games expected missed; who stepped in; depth chart moves; QB changes; where every feed came from |
@@ -137,6 +138,12 @@ Most knobs are near the top of `ffintel/model.py` and `ffintel/consensus.py`:
   pages to refresh per run, how often, and the Firecrawl cap for them.
 - `RUN_CAP`, `LOW_PRIORITY_SHARE` in web.py: Firecrawl credits per run, and the share of the
   month's budget after which only the most important pages use Firecrawl.
+- `SIMS`, `TEAM_SD`, `SD_FIT`, `UNIT_SD` in playoffs.py: number of simulated seasons, season-long
+  uncertainty per team (7%), and how much players, defenses and kickers swing week to week
+  (measured on 2023-25).
+- `DST_COEF`, `DST_COEF_NL`, `K_COEF`, `K_COEF_NL` in dstk.py: the weekly D/ST and kicker
+  models with and without a Vegas line (fit on 2023-24, checked on 2025; refit with
+  `python -c "from ffintel import dstk; dstk.measure()"`).
 - `WEIGHTS` in consensus.py: how much each outside source counts.
 
 ## Running on your own computer (optional)
